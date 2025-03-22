@@ -1,5 +1,6 @@
 use async_trait::async_trait;
-use brea_core::{BreaError, Property, PropertyImage, PropertyType, PropertyTypeTranslator, Result, Scraper, ListingUrlBuilder};
+use brea_core::{BreaError, Property, PropertyImage, PropertyType, Result};
+use crate::{PropertyTypeTranslator, Scraper, ScrapeQuery};
 use chrono::Utc;
 use reqwest::Client;
 use scraper::{Html, Selector};
@@ -31,11 +32,11 @@ impl ArgenPropScraper {
     )> {
         Ok((
             Selector::parse(".listing__item").map_err(|e| BreaError::Scraping(e.to_string()))?,
-            Selector::parse("a.card .card__title").map_err(|e| BreaError::Scraping(e.to_string()))?,
+            Selector::parse(".card__title").map_err(|e| BreaError::Scraping(e.to_string()))?,
             Selector::parse(".card__price").map_err(|e| BreaError::Scraping(e.to_string()))?,
             Selector::parse(".card__address").map_err(|e| BreaError::Scraping(e.to_string()))?,
-            Selector::parse(".card__main-features").map_err(|e| BreaError::Scraping(e.to_string()))?,
-            Selector::parse(".card__info").map_err(|e| BreaError::Scraping(e.to_string()))?,
+            Selector::parse(".card__main-features li").map_err(|e| BreaError::Scraping(e.to_string()))?,
+            Selector::parse(".card__description").map_err(|e| BreaError::Scraping(e.to_string()))?,
             Selector::parse(".card__photos img").map_err(|e| BreaError::Scraping(e.to_string()))?,
             Selector::parse(".pagination__page-next").map_err(|e| BreaError::Scraping(e.to_string()))?,
         ))
@@ -144,7 +145,11 @@ impl ArgenPropScraper {
         let mut rooms = 0;
         let mut antiquity = 0;
 
-        for feature in element.select(&Selector::parse("li").unwrap()) {
+        // Get all features from the main-features list
+        let feature_selector = Selector::parse(".card__main-features li").map_err(|e| BreaError::Scraping(e.to_string())).unwrap();
+        let features = element.select(&feature_selector);
+        
+        for feature in features {
             let text = feature.text().collect::<String>().to_lowercase();
             if text.contains("m²") {
                 covered_size = self.parse_size(&text).unwrap_or(0.0);
@@ -190,74 +195,17 @@ impl PropertyTypeTranslator for ArgenPropScraper {
             PropertyType::House => "casas",
             PropertyType::Apartment => "departamentos",
             PropertyType::Land => "terrenos",
-            PropertyType::Ph => "depto-tipo-casa",
-            PropertyType::Local => "local",
-            PropertyType::Field => "campo",
-            PropertyType::Garage => "cochera",
-            PropertyType::CommercialPremises => "fondo-comercio",
-            PropertyType::Warehouse => "galpon",
-            PropertyType::Hotel => "hotel",
-            PropertyType::SpecialBusiness => "negocio-especial",
-            PropertyType::Office => "oficina",
-            PropertyType::CountryHouse => "quinta",
+            PropertyType::Ph => "ph",
+            PropertyType::Local => "locales",
+            PropertyType::Field => "campos",
+            PropertyType::Garage => "cocheras",
+            PropertyType::CommercialPremises => "locales-comerciales",
+            PropertyType::Warehouse => "galpones",
+            PropertyType::Hotel => "hoteles",
+            PropertyType::SpecialBusiness => "negocios-especiales",
+            PropertyType::Office => "oficinas",
+            PropertyType::CountryHouse => "quintas",
         }
-    }
-}
-
-impl ListingUrlBuilder for ArgenPropScraper {
-    fn build_listing_url(
-        &self,
-        district: &str,
-        property_type: &PropertyType,
-        min_price: Option<f64>,
-        max_price: Option<f64>,
-        min_size: Option<f64>,
-        max_size: Option<f64>,
-    ) -> String {
-        // Convert district to lowercase and handle special cases
-        let district = district.to_lowercase();
-        let district = district
-            .strip_prefix("la ")
-            .unwrap_or(&district)
-            .replace(' ', "-");
-        
-        // Build the base URL
-        let mut url = format!(
-            "https://www.argenprop.com/{}/venta/{}",
-            self.property_type_to_str(property_type),
-            district
-        );
-
-        // Add price filters if provided
-        if min_price.is_some() || max_price.is_some() {
-            url.push_str("?precio=");
-            if let Some(min) = min_price {
-                url.push_str(&format!("{}", min as i64));
-            }
-            url.push('-');
-            if let Some(max) = max_price {
-                url.push_str(&format!("{}", max as i64));
-            }
-        }
-
-        // Add size filters if provided
-        if min_size.is_some() || max_size.is_some() {
-            if url.contains('?') {
-                url.push('&');
-            } else {
-                url.push('?');
-            }
-            url.push_str("superficie=");
-            if let Some(min) = min_size {
-                url.push_str(&format!("{}", min as i64));
-            }
-            url.push('-');
-            if let Some(max) = max_size {
-                url.push_str(&format!("{}", max as i64));
-            }
-        }
-
-        url
     }
 }
 
@@ -281,31 +229,65 @@ impl Scraper for ArgenPropScraper {
         ]
     }
 
-    async fn scrape_page(&self, url: &str) -> Result<(Vec<(Property, Vec<PropertyImage>)>, bool)> {
+    async fn scrape_page(&self, query: &ScrapeQuery) -> Result<(Vec<(Property, Vec<PropertyImage>)>, bool)> {
+        // Build the URL for the query
+        let district = query.district.to_lowercase();
+        let district = district
+            .strip_prefix("la ")
+            .unwrap_or(&district)
+            .replace(' ', "-");
+        
+        // Build the base URL
+        let mut url = format!(
+            "https://www.argenprop.com/{}/venta/{}",
+            self.property_type_to_str(&query.property_type),
+            district
+        );
+
+        // Add price filters if provided
+        if query.min_price.is_some() || query.max_price.is_some() {
+            url.push_str("?precio=");
+            if let Some(min) = query.min_price {
+                url.push_str(&format!("{}", min as i64));
+            }
+            url.push('-');
+            if let Some(max) = query.max_price {
+                url.push_str(&format!("{}", max as i64));
+            }
+        }
+
+        // Add size filters if provided
+        if query.min_size.is_some() || query.max_size.is_some() {
+            if url.contains('?') {
+                url.push('&');
+            } else {
+                url.push('?');
+            }
+            url.push_str("superficie=");
+            if let Some(min) = query.min_size {
+                url.push_str(&format!("{}", min as i64));
+            }
+            url.push('-');
+            if let Some(max) = query.max_size {
+                url.push_str(&format!("{}", max as i64));
+            }
+        }
+
+        // Add page number if not first page
+        if query.page > 1 {
+            if url.contains('?') {
+                url.push_str(&format!("&pagina-{}", query.page));
+            } else {
+                url.push_str(&format!("?pagina-{}", query.page));
+            }
+        }
+
         info!("Scraping page: {}", url);
-        let html = self.fetch_page(url).await?;
+        let html = self.fetch_page(&url).await?;
         let document = Html::parse_document(&html);
         
         // Extract property type from URL
-        let property_type = url.split('/')
-            .nth(3)
-            .and_then(|t| match t {
-                "casas" => Some(PropertyType::House),
-                "departamentos" => Some(PropertyType::Apartment),
-                "terrenos" => Some(PropertyType::Land),
-                "depto-tipo-casa" => Some(PropertyType::Ph),
-                "local" => Some(PropertyType::Local),
-                "campo" => Some(PropertyType::Field),
-                "cochera" => Some(PropertyType::Garage),
-                "fondo-comercio" => Some(PropertyType::CommercialPremises),
-                "galpon" => Some(PropertyType::Warehouse),
-                "hotel" => Some(PropertyType::Hotel),
-                "negocio-especial" => Some(PropertyType::SpecialBusiness),
-                "oficina" => Some(PropertyType::Office),
-                "quinta" => Some(PropertyType::CountryHouse),
-                _ => None,
-            })
-            .ok_or_else(|| BreaError::Scraping("Could not determine property type from URL".to_string()))?;
+        let property_type = query.property_type.clone();
         
         let (
             listing_item_selector,
@@ -331,8 +313,21 @@ impl Scraper for ArgenPropScraper {
             let property_url = item.select(&Selector::parse("a.card").map_err(|e| BreaError::Scraping(e.to_string()))?)
                 .next()
                 .and_then(|el| el.value().attr("href"))
-                .map(|href| format!("https://www.argenprop.com{}", href))
+                .map(|href| {
+                    if href.starts_with("http") {
+                        href.to_string()
+                    } else {
+                        format!("https://www.argenprop.com{}", href)
+                    }
+                })
                 .unwrap_or_default();
+
+            // Extract the external_id from the data-item-card attribute
+            let external_id = item.select(&Selector::parse("a.card").map_err(|e| BreaError::Scraping(e.to_string()))?)
+                .next()
+                .and_then(|el| el.value().attr("data-item-card"))
+                .unwrap_or_default()
+                .to_string();
 
             let price_usd = item.select(&price_selector)
                 .next()
@@ -346,11 +341,7 @@ impl Scraper for ArgenPropScraper {
                 .map(|addr| addr.trim().to_string())
                 .unwrap_or_default();
 
-            let (covered_size, rooms, antiquity) = item
-                .select(&features_selector)
-                .next()
-                .map(|el| self.extract_features(el))
-                .unwrap_or((0.0, 0, 0));
+            let (covered_size, rooms, antiquity) = self.extract_features(item);
 
             let description = item.select(&description_selector)
                 .next()
@@ -359,9 +350,10 @@ impl Scraper for ArgenPropScraper {
 
             let property = Property {
                 id: None,
-                external_id: property_url.clone(),
+                external_id,
                 source: "argenprop".to_string(),
                 property_type: Some(property_type.clone()),
+                district: query.district.clone(),
                 title,
                 description,
                 price_usd,
@@ -400,141 +392,5 @@ impl Scraper for ArgenPropScraper {
         debug!("Has next page: {}", has_next);
 
         Ok((property_data, has_next))
-    }
-
-    async fn get_next_page_url(&self, current_url: &str) -> Result<Option<String>> {
-        let url = Url::parse(current_url)
-            .map_err(|e| BreaError::Scraping(format!("Failed to parse URL: {}", e)))?;
-
-        // Get current page from query or default to 1
-        let current_page = url.query_pairs()
-            .find(|(key, _)| key.starts_with("pagina-"))
-            .and_then(|(key, _)| {
-                let key_str = key.to_string();
-                let page_str = key_str.split('-').nth(1)?.to_string();
-                page_str.parse::<u32>().ok()
-            })
-            .unwrap_or(1);
-
-        let next_page = current_page + 1;
-        let mut new_url = url.clone();
-        new_url.set_query(Some(&format!("pagina-{}", next_page)));
-        
-        info!("Building next page URL: {}", new_url.as_str());
-        Ok(Some(new_url.to_string()))
-    }
-
-    async fn scrape_property(&self, url: &str) -> Result<(Property, Vec<PropertyImage>)> {
-        let html = self.fetch_page(url).await?;
-        let document = Html::parse_document(&html);
-
-        // Extract property type from URL
-        let property_type = url.split('/')
-            .nth(3)
-            .and_then(|t| match t {
-                "casas" => Some(PropertyType::House),
-                "departamentos" => Some(PropertyType::Apartment),
-                "terrenos" => Some(PropertyType::Land),
-                "depto-tipo-casa" => Some(PropertyType::Ph),
-                "local" => Some(PropertyType::Local),
-                "campo" => Some(PropertyType::Field),
-                "cochera" => Some(PropertyType::Garage),
-                "fondo-comercio" => Some(PropertyType::CommercialPremises),
-                "galpon" => Some(PropertyType::Warehouse),
-                "hotel" => Some(PropertyType::Hotel),
-                "negocio-especial" => Some(PropertyType::SpecialBusiness),
-                "oficina" => Some(PropertyType::Office),
-                "quinta" => Some(PropertyType::CountryHouse),
-                _ => None,
-            })
-            .ok_or_else(|| BreaError::Scraping("Could not determine property type from URL".to_string()))?;
-
-        let (
-            title_selector,
-            price_selector,
-            address_selector,
-            description_selector,
-            features_selector,
-            images_selector,
-        ) = Self::create_detail_selectors()?;
-
-        // Extract property details
-        let title = document.select(&title_selector)
-            .next()
-            .map(|el| el.text().collect::<String>())
-            .unwrap_or_default();
-
-        let price_text = document.select(&price_selector)
-            .next()
-            .map(|el| el.text().collect::<String>())
-            .unwrap_or_default();
-        let price_usd = self.parse_price(&price_text).unwrap_or(0.0);
-
-        let address = document.select(&address_selector)
-            .next()
-            .map(|el| el.text().collect::<String>())
-            .unwrap_or_default();
-
-        let description = document.select(&description_selector)
-            .next()
-            .map(|el| el.text().collect::<String>());
-
-        let mut covered_size = 0.0;
-        let mut rooms = 0;
-        let mut antiquity = 0;
-
-        // Extract features
-        for feature in document.select(&features_selector) {
-            let text = feature.text().collect::<String>();
-            if text.contains("m² cubie.") {
-                covered_size = self.parse_size(&text).unwrap_or(0.0);
-            } else if text.contains("dorm.") {
-                rooms = self.parse_rooms(&text).unwrap_or(0);
-            } else if text.contains("años") {
-                antiquity = self.parse_antiquity(&text).unwrap_or(0);
-            }
-        }
-
-        // Extract images
-        let mut images = Vec::new();
-        for img in document.select(&images_selector) {
-            if let Some(img_url) = img.value().attr("src").or_else(|| img.value().attr("data-src")) {
-                if let Ok(url) = Url::parse(img_url) {
-                    let image = PropertyImage {
-                        id: None,
-                        property_id: 0, // This will be set after property is inserted
-                        url,
-                        local_path: PathBuf::new(), // This will be set when downloading
-                        hash: Vec::new(), // This will be set when downloading
-                        created_at: Utc::now(),
-                    };
-                    images.push(image);
-                }
-            }
-        }
-
-        let external_id = url.split('/')
-            .last()
-            .unwrap_or_default()
-            .to_string();
-
-        let property = Property {
-            id: None,
-            external_id,
-            source: "argenprop".to_string(),
-            property_type: Some(property_type),
-            title,
-            description,
-            price_usd,
-            address,
-            covered_size,
-            rooms,
-            antiquity,
-            url: Url::parse(url).map_err(|e| BreaError::Scraping(e.to_string()))?,
-            created_at: Utc::now(),
-            updated_at: Utc::now(),
-        };
-
-        Ok((property, images))
     }
 } 
