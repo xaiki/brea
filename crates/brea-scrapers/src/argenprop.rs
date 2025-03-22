@@ -234,8 +234,14 @@ impl Scraper for ArgenPropScraper {
         let district = query.district.to_lowercase();
         let district = district
             .strip_prefix("la ")
+            .or_else(|| district.strip_prefix("el "))
+            .or_else(|| district.strip_prefix("los "))
+            .or_else(|| district.strip_prefix("las "))
             .unwrap_or(&district)
             .replace(' ', "-");
+        
+        debug!("ScrapeQuery: district={}, property_type={}, page={}", query.district, query.property_type, query.page);
+        debug!("Processed district for URL: {}", district);
         
         // Build the base URL
         let mut url = format!(
@@ -387,10 +393,7 @@ impl Scraper for ArgenPropScraper {
             property_data.push((property, images));
         }
 
-        // Check if there's a next page
         let has_next = self.has_next_page(&html)?;
-        debug!("Has next page: {}", has_next);
-
         Ok((property_data, has_next))
     }
 } 

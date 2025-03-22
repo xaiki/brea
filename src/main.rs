@@ -157,16 +157,15 @@ struct ExportCommand {
 }
 
 #[derive(Parser)]
-#[command(about = "Update existing properties")]
-#[command(long_about = "Update existing properties by re-scraping their listings. Uses the original property type and location for efficient updates.")]
+#[command(about = "Update properties from the database")]
 struct UpdateCommand {
     /// The scraper to use (-x, --scraper)
     #[arg(short = 'x', long, value_enum, default_value_t = CliScraperType::Argenprop)]
     scraper: CliScraperType,
 
-    /// Maximum number of pages to scrape per property type (-c, --max-pages)
-    #[arg(short = 'c', long, default_value_t = 1)]
-    max_pages: u32,
+    /// Maximum number of pages to scrape (-c, --max-pages)
+    #[arg(short = 'c', long)]
+    max_pages: Option<u32>,
 
     /// Database file path (-d, --database)
     #[arg(short = 'd', long, default_value = "brea.db")]
@@ -297,17 +296,14 @@ async fn main() -> Result<()> {
                 if let Some(property_type) = &property.property_type {
                     property_types.insert(property_type.clone());
                 }
-                // Extract district from address (assuming it's the first part)
-                if let Some(district) = property.address.split(',').next() {
-                    districts.insert(district.trim().to_string());
-                }
+                districts.insert(property.district.clone());
             }
 
             info!("Found {} unique property types and {} districts to update", property_types.len(), districts.len());
 
-            // For each combination of property type and district, scrape fresh data
+            // For each property type and district combination, scrape fresh data
             for property_type in property_types {
-                for district in &districts {
+                for district in districts.iter() {
                     info!("Updating {} properties in {}", property_type, district);
                     let mut query = ScrapeQuery::new(
                         district.clone(),
@@ -321,36 +317,27 @@ async fn main() -> Result<()> {
                     let mut current_page = 1;
                     let mut has_next = true;
 
-                    while has_next && current_page <= cmd.max_pages {
+                    while has_next && (cmd.max_pages.is_none() || current_page <= cmd.max_pages.unwrap()) {
+                        info!("Scraping page {} for {} in {}", current_page, property_type, district);
                         let (new_properties, next) = scraper.scrape_page(&query).await?;
+                        info!("Found {} properties, has_next: {}", new_properties.len(), next);
                         has_next = next;
 
-                        // Update existing properties with new data
-                        for (mut new_property, mut new_images) in new_properties {
-                            // Try to find existing property by external_id
-                            if let Some(existing_property) = properties.iter().find(|p| p.external_id == new_property.external_id) {
-                                // Update existing property with new data
-                                new_property.id = existing_property.id;
-                                db.save_property(&mut new_property).await?;
-
-                                // Update images
-                                for image in &mut new_images {
-                                    image.property_id = new_property.id.unwrap();
-                                    db.save_property_image(image).await?;
-                                }
-                            } else {
-                                // New property found, save it
-                                db.save_property(&mut new_property).await?;
-                                for image in &mut new_images {
-                                    image.property_id = new_property.id.unwrap();
-                                    db.save_property_image(image).await?;
-                                }
+                        // Save new properties to database
+                        for (mut property, mut images) in new_properties {
+                            db.save_property(&mut property).await?;
+                            for mut image in images.iter_mut() {
+                                image.property_id = property.id.unwrap();
+                                db.save_property_image(&mut image).await?;
                             }
                         }
 
                         if has_next {
                             query.next_page();
                             current_page += 1;
+                            info!("Moving to page {}", current_page);
+                        } else {
+                            info!("No more pages for {} in {}", property_type, district);
                         }
                     }
                 }
