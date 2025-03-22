@@ -1,13 +1,13 @@
 use brea_core::{
-    Database, PropertyType, Result, create_property_table, PropertyDisplay as CorePropertyDisplay,
-    Scraper,
+    PropertyDisplay, PropertyType, Result,
+    create_property_table, Database,
 };
+use brea_scrapers::ScrapeQuery;
 use brea_scrapers::{ScraperFactory, ScraperType as CoreScraperType};
 use clap::{Parser, Subcommand, ValueEnum};
 use csv::Writer;
 use std::path::PathBuf;
 use tracing::{info, Level};
-use std::sync::Arc;
 
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
@@ -190,7 +190,7 @@ async fn main() -> Result<()> {
 
     match cli.command {
         Commands::Scrape(cmd) => {
-            let scraper: Arc<dyn Scraper> = ScraperFactory::create_scraper(cmd.scraper.into());
+            let scraper = ScraperFactory::create_scraper(cmd.scraper.into());
             let db = Database::new(&cmd.database).await?;
 
             let properties = if cmd.property_type.is_empty() {
@@ -208,9 +208,9 @@ async fn main() -> Result<()> {
                 let mut all_properties = Vec::new();
                 for property_type in cmd.property_type {
                     info!("Scraping {} properties in {}", property_type, cmd.district);
-                    let url = scraper.build_listing_url(
-                        &cmd.district,
-                        &property_type,
+                    let mut query = ScrapeQuery::new(
+                        cmd.district.clone(),
+                        property_type,
                         cmd.min_price,
                         cmd.max_price,
                         cmd.min_size,
@@ -219,20 +219,15 @@ async fn main() -> Result<()> {
 
                     let mut current_page = 1;
                     let mut has_next = true;
-                    let mut url = url;
 
                     while has_next && current_page <= cmd.max_pages {
-                        let (mut properties, next) = scraper.scrape_page(&url).await?;
+                        let (mut properties, next) = scraper.scrape_page(&query).await?;
                         all_properties.append(&mut properties);
                         has_next = next;
 
                         if has_next {
-                            if let Some(next_url) = scraper.get_next_page_url(&url).await? {
-                                url = next_url;
-                                current_page += 1;
-                            } else {
-                                break;
-                            }
+                            query.next_page();
+                            current_page += 1;
                         }
                     }
                 }
@@ -242,9 +237,13 @@ async fn main() -> Result<()> {
             for (mut property, mut images) in properties {
                 db.save_property(&mut property).await?;
                 
-                for image in &mut images {
-                    image.property_id = property.id.unwrap();
-                    db.save_property_image(image).await?;
+                if let Some(property_id) = property.id {
+                    for image in &mut images {
+                        image.property_id = property_id;
+                        db.save_property_image(image).await?;
+                    }
+                } else {
+                    info!("Skipping images for property {} as it was not saved successfully", property.external_id);
                 }
             }
         }
@@ -261,10 +260,10 @@ async fn main() -> Result<()> {
             let mut displays = Vec::new();
             for property in properties {
                 let price_history = db.get_price_history(property.id.unwrap()).await?;
-                displays.push(CorePropertyDisplay::new(property, price_history));
+                displays.push(PropertyDisplay::new(property, price_history));
             }
 
-            let table = create_property_table(&displays, cmd.graph_height as u8);
+            let table = create_property_table(&displays, cmd.graph_height);
             println!("{}", table);
         }
         Commands::Export(cmd) => {
@@ -286,7 +285,7 @@ async fn main() -> Result<()> {
             writer.flush()?;
         }
         Commands::Update(cmd) => {
-            let scraper: Arc<dyn Scraper> = ScraperFactory::create_scraper(cmd.scraper.into());
+            let scraper = ScraperFactory::create_scraper(cmd.scraper.into());
             let db = Database::new(&cmd.database).await?;
 
             // Get all unique property types and districts from the database
@@ -310,9 +309,9 @@ async fn main() -> Result<()> {
             for property_type in property_types {
                 for district in &districts {
                     info!("Updating {} properties in {}", property_type, district);
-                    let url = scraper.build_listing_url(
-                        district,
-                        &property_type,
+                    let mut query = ScrapeQuery::new(
+                        district.clone(),
+                        property_type.clone(),
                         None, // No price filters for updates
                         None,
                         None, // No size filters for updates
@@ -321,10 +320,9 @@ async fn main() -> Result<()> {
 
                     let mut current_page = 1;
                     let mut has_next = true;
-                    let mut url = url;
 
                     while has_next && current_page <= cmd.max_pages {
-                        let (new_properties, next) = scraper.scrape_page(&url).await?;
+                        let (new_properties, next) = scraper.scrape_page(&query).await?;
                         has_next = next;
 
                         // Update existing properties with new data
@@ -351,12 +349,8 @@ async fn main() -> Result<()> {
                         }
 
                         if has_next {
-                            if let Some(next_url) = scraper.get_next_page_url(&url).await? {
-                                url = next_url;
-                                current_page += 1;
-                            } else {
-                                break;
-                            }
+                            query.next_page();
+                            current_page += 1;
                         }
                     }
                 }
