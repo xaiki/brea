@@ -5,7 +5,7 @@ use chrono::{DateTime, Utc};
 use sqlx::{sqlite::SqlitePool, QueryBuilder, Row, Sqlite, Column, TypeInfo};
 use std::path::Path;
 use std::fs;
-use tracing::debug;
+use tracing::{debug, info};
 use serde_json;
 use hex;
 
@@ -15,7 +15,69 @@ use chrono::Duration;
 #[cfg(test)]
 use crate::PropertyType;
 
-const MIN_TIME_BETWEEN_RECORDS: i64 = 7 * 24; // 1 week in hours
+struct Migration {
+    version: i32,
+    up: &'static str,
+    down: &'static str,
+}
+
+const MIGRATIONS: &[Migration] = &[
+    Migration {
+        version: 1,
+        up: r#"
+        CREATE TABLE IF NOT EXISTS properties (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            external_id TEXT NOT NULL,
+            source TEXT NOT NULL,
+            property_type TEXT,
+            district TEXT NOT NULL,
+            title TEXT NOT NULL,
+            description TEXT,
+            price_usd REAL NOT NULL,
+            address TEXT NOT NULL,
+            covered_size REAL NOT NULL,
+            rooms INTEGER NOT NULL,
+            antiquity INTEGER NOT NULL,
+            url TEXT NOT NULL,
+            created_at DATETIME NOT NULL,
+            updated_at DATETIME NOT NULL,
+            UNIQUE(source, external_id)
+        )
+        "#,
+        down: "DROP TABLE IF EXISTS properties",
+    },
+    Migration {
+        version: 2,
+        up: r#"
+        CREATE TABLE IF NOT EXISTS property_price_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            property_id INTEGER NOT NULL,
+            price_usd REAL NOT NULL,
+            observed_at DATETIME NOT NULL,
+            FOREIGN KEY(property_id) REFERENCES properties(id),
+            UNIQUE(property_id, observed_at)
+        )
+        "#,
+        down: "DROP TABLE IF EXISTS property_price_history",
+    },
+    Migration {
+        version: 3,
+        up: r#"
+        CREATE TABLE IF NOT EXISTS property_images (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            property_id INTEGER NOT NULL,
+            url TEXT NOT NULL,
+            local_path TEXT NOT NULL,
+            hash BLOB NOT NULL,
+            created_at DATETIME NOT NULL,
+            updated_at DATETIME NOT NULL,
+            FOREIGN KEY(property_id) REFERENCES properties(id),
+            UNIQUE(property_id, url)
+        )
+        "#,
+        down: "DROP TABLE IF EXISTS property_images",
+    },
+];
 
 pub struct Database {
     pool: SqlitePool,
@@ -51,100 +113,63 @@ impl Database {
         Self::new(":memory:").await
     }
 
+    async fn create_migrations_table(&self) -> Result<()> {
+        sqlx::query(
+            r#"
+            CREATE TABLE IF NOT EXISTS migrations (
+                version INTEGER PRIMARY KEY,
+                applied_at DATETIME NOT NULL
+            )
+            "#,
+        )
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    async fn get_applied_migrations(&self) -> Result<Vec<i32>> {
+        let versions: Vec<i32> = sqlx::query_scalar("SELECT version FROM migrations ORDER BY version")
+            .fetch_all(&self.pool)
+            .await?;
+        Ok(versions)
+    }
+
     pub async fn migrate(&self) -> Result<()> {
         debug!("Running database migrations");
         
-        // Create properties table
-        sqlx::query(
-            r#"
-            CREATE TABLE IF NOT EXISTS properties (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                external_id TEXT NOT NULL,
-                source TEXT NOT NULL,
-                property_type TEXT,
-                title TEXT NOT NULL,
-                description TEXT,
-                price_usd REAL NOT NULL,
-                address TEXT NOT NULL,
-                covered_size REAL NOT NULL,
-                rooms INTEGER NOT NULL,
-                antiquity INTEGER NOT NULL,
-                url TEXT NOT NULL,
-                created_at DATETIME NOT NULL,
-                updated_at DATETIME NOT NULL,
-                UNIQUE(source, external_id)
-            )
-            "#,
-        )
-        .execute(&self.pool)
-        .await?;
+        // Create migrations table if it doesn't exist
+        self.create_migrations_table().await?;
 
-        // Create price history table
-        sqlx::query(
-            r#"
-            CREATE TABLE IF NOT EXISTS property_price_history (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                property_id INTEGER NOT NULL,
-                price_usd REAL NOT NULL,
-                observed_at DATETIME NOT NULL,
-                FOREIGN KEY(property_id) REFERENCES properties(id),
-                UNIQUE(property_id, observed_at)
-            )
-            "#,
-        )
-        .execute(&self.pool)
-        .await?;
+        // Get list of applied migrations
+        let applied = self.get_applied_migrations().await?;
 
-        // Create property_images table if it doesn't exist
-        sqlx::query(
-            r#"
-            CREATE TABLE IF NOT EXISTS property_images (
-                id INTEGER PRIMARY KEY AUTOINCREMENT,
-                property_id INTEGER NOT NULL,
-                url TEXT NOT NULL,
-                local_path TEXT NOT NULL,
-                hash BLOB NOT NULL,
-                created_at DATETIME NOT NULL,
-                FOREIGN KEY(property_id) REFERENCES properties(id),
-                UNIQUE(property_id, url)
-            )
-            "#,
-        )
-        .execute(&self.pool)
-        .await?;
-
-        // Add updated_at column if it doesn't exist
-        let has_updated_at: i32 = sqlx::query_scalar(
-            r#"
-            SELECT COUNT(*) FROM pragma_table_info('property_images') 
-            WHERE name='updated_at'
-            "#,
-        )
-        .fetch_one(&self.pool)
-        .await?;
-
-        if has_updated_at == 0 {
-            debug!("Adding updated_at column to property_images table");
-            // First add the column with a constant default
-            sqlx::query(
-                r#"
-                ALTER TABLE property_images
-                ADD COLUMN updated_at DATETIME NOT NULL DEFAULT '1970-01-01 00:00:00'
-                "#,
-            )
-            .execute(&self.pool)
-            .await?;
-
-            // Then update all existing rows to use their created_at value
-            sqlx::query(
-                r#"
-                UPDATE property_images
-                SET updated_at = created_at
-                WHERE updated_at = '1970-01-01 00:00:00'
-                "#,
-            )
-            .execute(&self.pool)
-            .await?;
+        // Apply pending migrations
+        for migration in MIGRATIONS {
+            if !applied.contains(&migration.version) {
+                info!("Applying migration {}", migration.version);
+                
+                // Start transaction
+                let mut tx = self.pool.begin().await?;
+                
+                // Apply migration
+                sqlx::query(migration.up)
+                    .execute(&mut *tx)
+                    .await?;
+                
+                // Record migration
+                sqlx::query(
+                    "INSERT INTO migrations (version, applied_at) VALUES (?, ?)",
+                )
+                .bind(migration.version)
+                .bind(Utc::now())
+                .execute(&mut *tx)
+                .await?;
+                
+                // Commit transaction
+                tx.commit().await?;
+                
+                info!("Successfully applied migration {}", migration.version);
+            }
         }
 
         // Clean up any redundant price history records
@@ -153,6 +178,45 @@ impl Database {
             debug!("Cleaned up {} redundant price history records", cleaned);
         }
 
+        Ok(())
+    }
+
+    pub async fn rollback(&self, version: i32) -> Result<()> {
+        debug!("Rolling back to version {}", version);
+        
+        // Get list of applied migrations
+        let applied = self.get_applied_migrations().await?;
+        
+        // Find migrations to rollback
+        let migrations_to_rollback: Vec<_> = MIGRATIONS
+            .iter()
+            .filter(|m| m.version > version && applied.contains(&m.version))
+            .collect();
+        
+        // Rollback in reverse order
+        for migration in migrations_to_rollback.iter().rev() {
+            info!("Rolling back migration {}", migration.version);
+            
+            // Start transaction
+            let mut tx = self.pool.begin().await?;
+            
+            // Rollback migration
+            sqlx::query(migration.down)
+                .execute(&mut *tx)
+                .await?;
+            
+            // Remove migration record
+            sqlx::query("DELETE FROM migrations WHERE version = ?")
+                .bind(migration.version)
+                .execute(&mut *tx)
+                .await?;
+            
+            // Commit transaction
+            tx.commit().await?;
+            
+            info!("Successfully rolled back migration {}", migration.version);
+        }
+        
         Ok(())
     }
 
@@ -278,110 +342,118 @@ impl Database {
     /// Dump all tables from the database
     pub async fn save_property(&self, property: &mut Property) -> Result<()> {
         let now = Utc::now();
-        let url_str = property.url.as_str();
 
         // Start a transaction
         let mut tx = self.pool.begin().await?;
 
-        // Get the current price and last observation time if the property exists
-        let (last_price, last_observation) = if let Some(id) = property.id {
-            let result = sqlx::query_as::<Sqlite, (Option<f64>, Option<DateTime<Utc>>)>(
-                r#"
-                SELECT price_usd, observed_at
-                FROM property_price_history
-                WHERE property_id = ?
-                ORDER BY observed_at DESC
-                LIMIT 1
-                "#
-            )
-            .bind(id)
-            .fetch_optional(&mut *tx)
-            .await?;
-            
-            result.map_or((None, None), |(price, obs)| (price, obs))
-        } else {
-            (None, None)
-        };
-
-        // Save or update the property
-        let id = sqlx::query(
+        // Check if property already exists
+        let existing = sqlx::query_as::<Sqlite, (i64, Option<f64>)>(
             r#"
-            INSERT INTO properties (
-                external_id, source, title, description, price_usd,
-                address, covered_size, rooms, antiquity, url,
-                created_at, updated_at
-            )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(source, external_id) DO UPDATE SET
-                title = excluded.title,
-                description = excluded.description,
-                price_usd = excluded.price_usd,
-                address = excluded.address,
-                covered_size = excluded.covered_size,
-                rooms = excluded.rooms,
-                antiquity = excluded.antiquity,
-                url = excluded.url,
-                updated_at = excluded.updated_at
-            RETURNING id
-            "#,
+            SELECT id, price_usd
+            FROM properties
+            WHERE source = ? AND external_id = ?
+            "#
         )
-        .bind(&property.external_id)
         .bind(&property.source)
-        .bind(&property.title)
-        .bind(&property.description)
-        .bind(property.price_usd)
-        .bind(&property.address)
-        .bind(property.covered_size)
-        .bind(property.rooms)
-        .bind(property.antiquity)
-        .bind(url_str)
-        .bind(now)
-        .bind(now)
-        .fetch_one(&mut *tx)
-        .await?
-        .get::<i64, _>(0);
+        .bind(&property.external_id)
+        .fetch_optional(&mut *tx)
+        .await?;
 
-        property.id = Some(id);
-
-        // Record price history if:
-        // 1. It's a new property
-        // 2. The price has changed from the last recorded price
-        // 3. OR it's been more than MIN_TIME_BETWEEN_RECORDS hours since the last observation
-        let should_record = match (last_price, last_observation) {
-            (None, _) => true, // New property or no price history
-            (Some(_), None) => true, // Have price but no observation time (shouldn't happen, but handle it)
-            (Some(last_price), Some(last_obs)) => {
-                let price_changed = (last_price - property.price_usd).abs() > last_price * 0.001; // 0.1% change threshold
-                let hours_since_last = (now - last_obs).num_hours();
-                let min_time_passed = hours_since_last >= MIN_TIME_BETWEEN_RECORDS;
-                price_changed || min_time_passed
-            }
-        };
-
-        if should_record {
-            let price_changed = last_price.map_or(true, |p| (p - property.price_usd).abs() > p * 0.001);
-            let hours_since_last = last_observation.map_or(0, |obs| (now - obs).num_hours());
-            
-            debug!("Recording price history for property {}: {} (changed: {}, hours since last: {})", 
-                id, 
-                property.price_usd,
-                price_changed,
-                hours_since_last
-            );
-
-            sqlx::query(
-                r#"
-                INSERT INTO property_price_history (
-                    property_id, price_usd, observed_at
+        match existing {
+            Some((id, last_price)) => {
+                // Update existing property
+                property.id = Some(id);
+                sqlx::query(
+                    r#"
+                    UPDATE properties 
+                    SET property_type = ?,
+                        district = ?,
+                        title = ?,
+                        description = ?,
+                        price_usd = ?,
+                        address = ?,
+                        covered_size = ?,
+                        rooms = ?,
+                        antiquity = ?,
+                        url = ?,
+                        updated_at = ?
+                    WHERE id = ?
+                    "#
                 )
-                VALUES (?, ?, ?)
-                "#,
-            )
-            .bind(id)
-            .bind(property.price_usd)
-            .bind(now)
-            .execute(&mut *tx)
-            .await?;
+                .bind(&property.property_type)
+                .bind(&property.district)
+                .bind(&property.title)
+                .bind(&property.description)
+                .bind(property.price_usd)
+                .bind(&property.address)
+                .bind(property.covered_size)
+                .bind(property.rooms)
+                .bind(property.antiquity)
+                .bind(property.url.as_str())
+                .bind(now)
+                .bind(id)
+                .execute(&mut *tx)
+                .await?;
+
+                // Save price history if price has changed
+                if last_price != Some(property.price_usd) {
+                    sqlx::query(
+                        r#"
+                        INSERT INTO property_price_history (property_id, price_usd, observed_at)
+                        VALUES (?, ?, ?)
+                        "#
+                    )
+                    .bind(id)
+                    .bind(property.price_usd)
+                    .bind(now)
+                    .execute(&mut *tx)
+                    .await?;
+                }
+            }
+            None => {
+                // Insert new property
+                let result = sqlx::query(
+                    r#"
+                    INSERT INTO properties (
+                        external_id, source, property_type, district, title,
+                        description, price_usd, address, covered_size, rooms,
+                        antiquity, url, created_at, updated_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    "#
+                )
+                .bind(&property.external_id)
+                .bind(&property.source)
+                .bind(&property.property_type)
+                .bind(&property.district)
+                .bind(&property.title)
+                .bind(&property.description)
+                .bind(property.price_usd)
+                .bind(&property.address)
+                .bind(property.covered_size)
+                .bind(property.rooms)
+                .bind(property.antiquity)
+                .bind(property.url.as_str())
+                .bind(now)
+                .bind(now)
+                .execute(&mut *tx)
+                .await?;
+
+                property.id = Some(result.last_insert_rowid());
+
+                // Save initial price history
+                sqlx::query(
+                    r#"
+                    INSERT INTO property_price_history (property_id, price_usd, observed_at)
+                    VALUES (?, ?, ?)
+                    "#
+                )
+                .bind(property.id.unwrap())
+                .bind(property.price_usd)
+                .bind(now)
+                .execute(&mut *tx)
+                .await?;
+            }
         }
 
         // Commit the transaction
@@ -392,7 +464,6 @@ impl Database {
 
     pub async fn save_property_image(&self, image: &mut PropertyImage) -> Result<()> {
         let now = Utc::now();
-        let url_str = image.url.as_str();
         let path_str = image.local_path.to_str().ok_or_else(|| BreaError::Database(sqlx::Error::Protocol("Invalid path".into())))?;
 
         let id = sqlx::query(
@@ -407,7 +478,7 @@ impl Database {
             "#,
         )
         .bind(image.property_id)
-        .bind(url_str)
+        .bind(image.url.as_str())
         .bind(path_str)
         .bind(&image.hash)
         .bind(now)
@@ -429,7 +500,26 @@ impl Database {
         max_size: Option<f64>,
     ) -> Result<Vec<Property>> {
         let mut query_builder: QueryBuilder<Sqlite> = QueryBuilder::new(
-            "SELECT * FROM properties WHERE 1=1",
+            r#"
+            SELECT 
+                id,
+                external_id,
+                source,
+                property_type,
+                district,
+                title,
+                description,
+                price_usd,
+                address,
+                covered_size,
+                rooms,
+                antiquity,
+                url,
+                created_at,
+                updated_at
+            FROM properties 
+            WHERE 1=1
+            "#,
         );
 
         if let Some(source) = source {
@@ -547,6 +637,7 @@ mod tests {
             external_id: "test123".to_string(),
             source: "argenprop".to_string(),
             property_type: Some(PropertyType::House),
+            district: "Test District".to_string(),
             title: "Test Property".to_string(),
             description: Some("A test property".to_string()),
             price_usd: 100000.0,
@@ -596,6 +687,7 @@ mod tests {
             external_id: "test123".to_string(),
             source: "argenprop".to_string(),
             property_type: Some(PropertyType::House),
+            district: "Test District".to_string(),
             title: "Test Property".to_string(),
             description: Some("A test property".to_string()),
             price_usd: 100000.0,
@@ -641,6 +733,7 @@ mod tests {
             external_id: "test123".to_string(),
             source: "argenprop".to_string(),
             property_type: Some(PropertyType::House),
+            district: "Test District".to_string(),
             title: "Test Property".to_string(),
             description: Some("A test property".to_string()),
             price_usd: 100000.0,
