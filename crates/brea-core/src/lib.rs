@@ -1,4 +1,3 @@
-use async_trait::async_trait;
 use chrono::{DateTime, Utc};
 use serde::{Deserialize, Serialize};
 use sqlx::{FromRow, Row};
@@ -158,6 +157,7 @@ pub struct Property {
     pub external_id: String,
     pub source: String,
     pub property_type: Option<PropertyType>,
+    pub district: String,
     pub title: String,
     pub description: Option<String>,
     pub price_usd: f64,
@@ -181,6 +181,7 @@ impl<'r> FromRow<'r, sqlx::sqlite::SqliteRow> for Property {
             external_id: row.try_get("external_id")?,
             source: row.try_get("source")?,
             property_type: row.try_get("property_type")?,
+            district: row.try_get("district")?,
             title: row.try_get("title")?,
             description: row.try_get("description")?,
             price_usd: row.try_get("price_usd")?,
@@ -226,98 +227,6 @@ mod path_buf_serde {
     {
         String::deserialize(deserializer).map(PathBuf::from)
     }
-}
-
-/// Trait for building URLs for property listings
-pub trait ListingUrlBuilder {
-    /// Build a URL for property listings based on search criteria
-    fn build_listing_url(
-        &self,
-        district: &str,
-        property_type: &PropertyType,
-        min_price: Option<f64>,
-        max_price: Option<f64>,
-        min_size: Option<f64>,
-        max_size: Option<f64>,
-    ) -> String;
-}
-
-/// Trait for scraping property listings from various sources
-#[async_trait]
-pub trait Scraper: ListingUrlBuilder + Send + Sync {
-    /// Scrape a single page of property listings
-    async fn scrape_page(&self, url: &str) -> Result<(Vec<(Property, Vec<PropertyImage>)>, bool)>;
-
-    /// Get the URL for the next page of listings
-    async fn get_next_page_url(&self, current_url: &str) -> Result<Option<String>>;
-
-    /// Scrape a single property's details
-    async fn scrape_property(&self, url: &str) -> Result<(Property, Vec<PropertyImage>)>;
-
-    /// Get all property types supported by this scraper
-    fn supported_property_types(&self) -> Vec<PropertyType>;
-
-    /// Scrape multiple pages of property listings
-    async fn scrape_listing(&self, url: &str, max_pages: u32) -> Result<Vec<(Property, Vec<PropertyImage>)>> {
-        let mut all_properties = Vec::new();
-        let mut current_url = url.to_string();
-        let mut pages_scraped = 0;
-
-        while pages_scraped < max_pages {
-            let (properties, has_next) = self.scrape_page(&current_url).await?;
-            all_properties.extend(properties);
-
-            if !has_next {
-                break;
-            }
-
-            if let Some(next_url) = self.get_next_page_url(&current_url).await? {
-                current_url = next_url;
-            } else {
-                break;
-            }
-
-            pages_scraped += 1;
-        }
-
-        Ok(all_properties)
-    }
-
-    /// Scrape all property types for a given district
-    async fn scrape_all_types(
-        &self,
-        district: &str,
-        min_price: Option<f64>,
-        max_price: Option<f64>,
-        min_size: Option<f64>,
-        max_size: Option<f64>,
-        max_pages: u32,
-    ) -> Result<Vec<(Property, Vec<PropertyImage>)>> {
-        let mut all_properties = Vec::new();
-        let property_types = self.supported_property_types();
-
-        for property_type in property_types {
-            let url = self.build_listing_url(
-                district,
-                &property_type,
-                min_price,
-                max_price,
-                min_size,
-                max_size,
-            );
-
-            let properties = self.scrape_listing(&url, max_pages).await?;
-            all_properties.extend(properties);
-        }
-
-        Ok(all_properties)
-    }
-}
-
-/// Trait for translating PropertyType to scraper-specific strings
-pub trait PropertyTypeTranslator {
-    /// Convert a PropertyType to a string representation for this scraper
-    fn property_type_to_str(&self, property_type: &PropertyType) -> &'static str;
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -373,6 +282,7 @@ mod tests {
             external_id: "test123".to_string(),
             source: "argenprop".to_string(),
             property_type: Some(PropertyType::House),
+            district: "Test District".to_string(),
             title: "Test Property".to_string(),
             description: Some("A test property".to_string()),
             price_usd: 100000.0,
