@@ -16,13 +16,17 @@ impl PriceHistory {
 
     pub fn to_ascii_graph(&self, width: usize, height: usize) -> String {
         if self.prices.is_empty() {
-            return "No hist".to_string();
+            return "No price history available".to_string();
         }
 
         // Extract prices and convert to kUSD, rounding to whole numbers
         let prices: Vec<f64> = self.prices.iter()
             .map(|(price, _)| (*price / 1000.0).round())
             .collect();
+
+        if prices.is_empty() {
+            return "No valid prices in history".to_string();
+        }
 
         // Create the graph using rasciigraph
         let config = Config::default()
