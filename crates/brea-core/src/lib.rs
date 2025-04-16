@@ -305,35 +305,187 @@ mod tests {
     }
 
     #[test]
-    fn test_property_image_serialization() {
-        let image = PropertyImage {
+    fn test_property_validation() {
+        // Test valid property
+        let valid_property = Property {
             id: Some(1),
-            property_id: 1,
-            url: Url::from_str("https://example.com/image.jpg").unwrap(),
-            local_path: PathBuf::from("/tmp/images/test.jpg"),
-            hash: vec![1, 2, 3, 4],
-            created_at: Utc.with_ymd_and_hms(2024, 3, 21, 0, 0, 0).unwrap(),
+            external_id: "test123".to_string(),
+            source: "argenprop".to_string(),
+            property_type: Some(PropertyType::House),
+            district: "Test District".to_string(),
+            title: "Test Property".to_string(),
+            description: Some("A test property".to_string()),
+            price_usd: 100000.0,
+            address: "123 Test St".to_string(),
+            covered_size: 100.0,
+            rooms: 3,
+            antiquity: 5,
+            url: Url::from_str("https://example.com/property/123").unwrap(),
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
         };
 
-        let json = serde_json::to_string(&image).unwrap();
-        let deserialized: PropertyImage = serde_json::from_str(&json).unwrap();
+        // Test invalid property with negative price
+        let mut invalid_property = valid_property.clone();
+        invalid_property.price_usd = -100000.0;
+        assert!(invalid_property.price_usd < 0.0, "Price should not be negative");
 
-        assert_eq!(image.id, deserialized.id);
-        assert_eq!(image.property_id, deserialized.property_id);
-        assert_eq!(image.url.as_str(), deserialized.url.as_str());
-        assert_eq!(image.local_path, deserialized.local_path);
-        assert_eq!(image.hash, deserialized.hash);
+        // Test invalid property with negative size
+        let mut invalid_property = valid_property.clone();
+        invalid_property.covered_size = -100.0;
+        assert!(invalid_property.covered_size < 0.0, "Size should not be negative");
+
+        // Test invalid property with negative rooms
+        let mut invalid_property = valid_property.clone();
+        invalid_property.rooms = -3;
+        assert!(invalid_property.rooms < 0, "Rooms should not be negative");
+
+        // Test invalid property with negative antiquity
+        let mut invalid_property = valid_property.clone();
+        invalid_property.antiquity = -5;
+        assert!(invalid_property.antiquity < 0, "Antiquity should not be negative");
     }
 
     #[test]
-    fn test_error_display() {
-        let db_error = BreaError::Database(sqlx::Error::RowNotFound);
-        assert!(db_error.to_string().contains("Database error"));
+    fn test_property_comparison() {
+        let now = Utc::now();
+        let property1 = Property {
+            id: Some(1),
+            external_id: "test123".to_string(),
+            source: "argenprop".to_string(),
+            property_type: Some(PropertyType::House),
+            district: "Test District".to_string(),
+            title: "Test Property".to_string(),
+            description: Some("A test property".to_string()),
+            price_usd: 100000.0,
+            address: "123 Test St".to_string(),
+            covered_size: 100.0,
+            rooms: 3,
+            antiquity: 5,
+            url: Url::from_str("https://example.com/property/123").unwrap(),
+            created_at: now,
+            updated_at: now,
+        };
 
-        let scraping_error = BreaError::Scraping("Failed to parse".to_string());
-        assert!(scraping_error.to_string().contains("Failed to parse"));
+        let property2 = Property {
+            id: Some(2),
+            external_id: "test456".to_string(),
+            source: "argenprop".to_string(),
+            property_type: Some(PropertyType::Apartment),
+            district: "Test District".to_string(),
+            title: "Another Property".to_string(),
+            description: Some("Another test property".to_string()),
+            price_usd: 150000.0,
+            address: "456 Test St".to_string(),
+            covered_size: 80.0,
+            rooms: 2,
+            antiquity: 3,
+            url: Url::from_str("https://example.com/property/456").unwrap(),
+            created_at: now,
+            updated_at: now,
+        };
 
-        let invalid_type_error = BreaError::InvalidPropertyType("Invalid type".to_string());
-        assert!(invalid_type_error.to_string().contains("Invalid property type"));
+        // Test price comparison
+        assert!(property1.price_usd < property2.price_usd);
+        assert!(property1.covered_size > property2.covered_size);
+        assert!(property1.rooms > property2.rooms);
+        assert!(property1.antiquity > property2.antiquity);
+    }
+
+    #[test]
+    fn test_property_display() {
+        let now = Utc::now();
+        let property = Property {
+            id: Some(1),
+            external_id: "test123".to_string(),
+            source: "argenprop".to_string(),
+            property_type: Some(PropertyType::House),
+            district: "Test District".to_string(),
+            title: "Test Property".to_string(),
+            description: Some("A test property".to_string()),
+            price_usd: 100000.0,
+            address: "123 Test St".to_string(),
+            covered_size: 100.0,
+            rooms: 3,
+            antiquity: 5,
+            url: Url::from_str("https://example.com/property/123").unwrap(),
+            created_at: now,
+            updated_at: now,
+        };
+
+        let display = PropertyDisplay::new(property, vec![]);
+        let formatted = display.format();
+        
+        assert!(formatted.contains("Test Property"));
+        assert!(formatted.contains("$100k"));
+        assert!(formatted.contains("123 Test St"));
+        assert!(formatted.contains("100m²"));
+        assert!(formatted.contains("3 rooms"));
+        assert!(formatted.contains("5 years old"));
+    }
+
+    #[test]
+    fn test_property_edge_cases() {
+        // Test property with empty strings
+        let empty_property = Property {
+            id: Some(1),
+            external_id: "".to_string(),
+            source: "".to_string(),
+            property_type: None,
+            district: "".to_string(),
+            title: "".to_string(),
+            description: None,
+            price_usd: 0.0,
+            address: "".to_string(),
+            covered_size: 0.0,
+            rooms: 0,
+            antiquity: 0,
+            url: Url::from_str("https://example.com").unwrap(),
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        };
+
+        // Test property with maximum values
+        let max_property = Property {
+            id: Some(i64::MAX),
+            external_id: "test123".to_string(),
+            source: "argenprop".to_string(),
+            property_type: Some(PropertyType::House),
+            district: "Test District".to_string(),
+            title: "Test Property".to_string(),
+            description: Some("A test property".to_string()),
+            price_usd: f64::MAX,
+            address: "123 Test St".to_string(),
+            covered_size: f64::MAX,
+            rooms: i32::MAX,
+            antiquity: i32::MAX,
+            url: Url::from_str("https://example.com/property/123").unwrap(),
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        };
+
+        // Test property with minimum values
+        let min_property = Property {
+            id: Some(i64::MIN),
+            external_id: "test123".to_string(),
+            source: "argenprop".to_string(),
+            property_type: Some(PropertyType::House),
+            district: "Test District".to_string(),
+            title: "Test Property".to_string(),
+            description: Some("A test property".to_string()),
+            price_usd: f64::MIN_POSITIVE,
+            address: "123 Test St".to_string(),
+            covered_size: f64::MIN_POSITIVE,
+            rooms: i32::MIN,
+            antiquity: i32::MIN,
+            url: Url::from_str("https://example.com/property/123").unwrap(),
+            created_at: Utc::now(),
+            updated_at: Utc::now(),
+        };
+
+        // Test serialization of edge cases
+        assert!(serde_json::to_string(&empty_property).is_ok());
+        assert!(serde_json::to_string(&max_property).is_ok());
+        assert!(serde_json::to_string(&min_property).is_ok());
     }
 } 

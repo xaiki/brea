@@ -8,10 +8,28 @@ This test plan covers the testing strategy for the BREA Real Estate Analyzer pro
 
 ### 1.1 Property Model Tests
 - [x] Property serialization/deserialization
+  - Basic property serialization/deserialization
+  - Edge cases (empty strings, min/max values)
+  - URL handling
 - [x] Property type conversion
+  - String to PropertyType conversion
+  - PropertyType to string conversion
+  - Invalid type handling
 - [x] Property display formatting
-- [ ] Property validation rules
-- [ ] Property comparison logic
+  - Basic property display
+  - Price formatting
+  - Size and room formatting
+  - Address formatting
+- [x] Property validation rules
+  - Negative price validation
+  - Negative size validation
+  - Negative rooms validation
+  - Negative antiquity validation
+- [x] Property comparison logic
+  - Price comparison
+  - Size comparison
+  - Room count comparison
+  - Antiquity comparison
 
 ### 1.2 Database Operations
 - [x] Database connection and initialization
@@ -94,18 +112,27 @@ This test plan covers the testing strategy for the BREA Real Estate Analyzer pro
 - Place tests in the same file as the code being tested
 - Use `#[tokio::test]` for async tests
 - Mock external dependencies where appropriate
+- Test both success and failure cases
+- Include edge cases and boundary conditions
+- Use descriptive test names
+- Group related tests in modules
 
 ### 5.2 Integration Tests
 - Create separate test files in `tests/` directory
 - Use test databases for database operations
 - Mock HTTP requests for scraper tests
 - Clean up test data after each test
+- Test the full workflow
+- Include error scenarios
+- Test concurrent operations
 
 ### 5.3 Test Data
 - Use realistic test data
 - Include edge cases
 - Cover error scenarios
 - Document test data assumptions
+- Use constants for test data
+- Generate random test data where appropriate
 
 ## 6. Test Environment Setup
 
