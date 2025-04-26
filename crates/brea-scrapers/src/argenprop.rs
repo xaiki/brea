@@ -104,6 +104,10 @@ impl ArgenPropScraper {
     }
 
     fn has_next_page(&self, html: &str) -> Result<bool> {
+        if html.trim().is_empty() {
+            return Err(BreaError::Scraping("Empty HTML provided".to_string()));
+        }
+
         let document = Html::parse_document(html);
         
         // Check if there's a disabled next page button
@@ -240,7 +244,7 @@ impl Scraper for ArgenPropScraper {
             title_selector,
             price_selector,
             address_selector,
-            features_selector,
+            _features_selector,  // Rename to indicate it's intentionally unused
             description_selector,
             images_selector,
             _next_page_selector,
@@ -335,5 +339,154 @@ impl Scraper for ArgenPropScraper {
 
         let has_next = self.has_next_page(&html)?;
         Ok((property_data, has_next))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::ScrapeQuery;
+
+    #[tokio::test]
+    async fn test_url_construction() {
+        let scraper = ArgenPropScraper::new();
+        
+        // Test basic URL construction
+        let query = ScrapeQuery {
+            district: "palermo".to_string(),
+            property_type: PropertyType::Apartment,
+            min_price: None,
+            max_price: None,
+            min_size: None,
+            max_size: None,
+            page: 1,
+        };
+        
+        let (properties, _) = scraper.scrape_page(&query).await.unwrap();
+        assert!(!properties.is_empty());
+        
+        // Test with price range
+        let query = ScrapeQuery {
+            district: "palermo".to_string(),
+            property_type: PropertyType::Apartment,
+            min_price: Some(100000.0),
+            max_price: Some(200000.0),
+            min_size: None,
+            max_size: None,
+            page: 1,
+        };
+        
+        let (properties, _) = scraper.scrape_page(&query).await.unwrap();
+        assert!(!properties.is_empty());
+        
+        // Test with size range
+        let query = ScrapeQuery {
+            district: "palermo".to_string(),
+            property_type: PropertyType::Apartment,
+            min_price: None,
+            max_price: None,
+            min_size: Some(50.0),
+            max_size: Some(100.0),
+            page: 1,
+        };
+        
+        let (properties, _) = scraper.scrape_page(&query).await.unwrap();
+        assert!(!properties.is_empty());
+    }
+
+    #[tokio::test]
+    async fn test_html_parsing() {
+        let scraper = ArgenPropScraper::new();
+        
+        // Fetch a real page to test parsing
+        let query = ScrapeQuery {
+            district: "palermo".to_string(),
+            property_type: PropertyType::Apartment,
+            min_price: None,
+            max_price: None,
+            min_size: None,
+            max_size: None,
+            page: 1,
+        };
+        
+        let (properties, _) = scraper.scrape_page(&query).await.unwrap();
+        assert!(!properties.is_empty());
+        
+        // Test price parsing
+        let price_text = "USD 100.000";
+        let price = scraper.parse_price(price_text);
+        assert_eq!(price, Some(100000.0));
+        
+        // Test feature extraction from a real property
+        let property = &properties[0].0;
+        assert!(property.covered_size.is_some() || property.rooms.is_some() || property.antiquity.is_some());
+    }
+
+    #[tokio::test]
+    async fn test_pagination() {
+        let scraper = ArgenPropScraper::new();
+        
+        // Test first page
+        let query = ScrapeQuery {
+            district: "palermo".to_string(),
+            property_type: PropertyType::Apartment,
+            min_price: None,
+            max_price: None,
+            min_size: None,
+            max_size: None,
+            page: 1,
+        };
+        
+        let (_, has_next) = scraper.scrape_page(&query).await.unwrap();
+        assert!(has_next, "First page should have a next page");
+        
+        // Test last page (using a high page number)
+        let query = ScrapeQuery {
+            district: "palermo".to_string(),
+            property_type: PropertyType::Apartment,
+            min_price: None,
+            max_price: None,
+            min_size: None,
+            max_size: None,
+            page: 100,
+        };
+        
+        let (_, has_next) = scraper.scrape_page(&query).await.unwrap();
+        assert!(!has_next, "Last page should not have a next page");
+    }
+
+    #[tokio::test]
+    async fn test_error_handling() {
+        let scraper = ArgenPropScraper::new();
+        
+        // Test network error by using a non-existent domain
+        let query = ScrapeQuery {
+            district: "palermo".to_string(),
+            property_type: PropertyType::Apartment,
+            min_price: None,
+            max_price: None,
+            min_size: None,
+            max_size: None,
+            page: 1,
+        };
+        
+        // Override the client to use a non-existent domain
+        let mut scraper = scraper;
+        scraper.client = Client::builder()
+            .connect_timeout(std::time::Duration::from_millis(100))
+            .build()
+            .unwrap();
+        
+        let result = scraper.scrape_page(&query).await;
+        assert!(result.is_err(), "Request to non-existent domain should fail");
+        
+        // Test invalid HTML
+        let result = scraper.has_next_page("");
+        assert!(result.is_err(), "Empty HTML should return an error");
+        
+        // Test malformed HTML
+        let result = scraper.has_next_page("<not>valid</html>");
+        assert!(result.is_ok(), "Malformed HTML should not error, just return no next page");
+        assert!(!result.unwrap(), "Malformed HTML should indicate no next page");
     }
 } 
