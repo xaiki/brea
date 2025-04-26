@@ -35,6 +35,7 @@ This test plan covers the testing strategy for the BREA Real Estate Analyzer pro
 - [x] Database connection and initialization
 - [x] Property CRUD operations
 - [x] Property image CRUD operations
+- [x] Price history recording and tracking
 - [x] Price history cleanup
 - [x] Concurrent access handling
 - [x] Transaction rollback scenarios
@@ -45,7 +46,7 @@ This test plan covers the testing strategy for the BREA Real Estate Analyzer pro
 - [x] Error propagation
 - [x] Error recovery scenarios
 - [x] Database error handling
-- [ ] Scraper error handling
+- [x] Scraper error handling
 
 ## 2. Scraper Testing
 
@@ -96,26 +97,26 @@ This test plan covers the testing strategy for the BREA Real Estate Analyzer pro
 ## 4. Integration Tests
 
 ### 4.1 End-to-End Scenarios
-- [ ] Full property scraping workflow
-  - [ ] Single property scraping
-  - [ ] Multiple properties scraping
-  - [ ] Property update detection
-- [ ] Property update workflow
-  - [ ] Price change detection
-  - [ ] Status change detection
-  - [ ] Image update detection
-- [ ] Data export workflow
-  - [ ] CSV export with all fields
-  - [ ] CSV export with selected fields
-  - [ ] Error handling during export
-- [ ] Price history tracking
-  - [ ] Price change recording
-  - [ ] Price history cleanup
-  - [ ] Price trend analysis
-- [ ] Image downloading and hashing
-  - [ ] Image download success
-  - [ ] Image download failure
-  - [ ] Duplicate image detection
+- [x] Full property scraping workflow
+  - [x] Single property scraping
+  - [x] Multiple properties scraping
+  - [x] Property update detection
+- [x] Property update workflow
+  - [x] Price change detection
+  - [x] Status change detection
+  - [x] Image update detection
+- [x] Data export workflow
+  - [x] CSV export with all fields
+  - [x] CSV export with selected fields
+  - [x] Error handling during export
+- [x] Price history tracking
+  - [x] Price change recording
+  - [x] Price history cleanup
+  - [x] Price trend analysis
+- [x] Image downloading and hashing
+  - [x] Image download success
+  - [x] Image download failure
+  - [x] Duplicate image detection
 
 ### 4.2 Performance Tests
 - [ ] Scraping performance
