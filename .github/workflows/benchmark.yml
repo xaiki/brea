@@ -34,12 +34,12 @@ jobs:
 
       - name: Run benchmarks
         run: |
-          # Run benchmarks and capture the output
-          cargo bench -- -Z unstable-options --format json > output.txt 2>&1
-          # Extract only the benchmark results (skip test output)
-          sed -n '/^{/,/^}/p' output.txt | grep -v "Running unittests" | grep -v "test_count" | grep -v "event" | grep -v "exec_time" > filtered.txt
-          # Convert the JSON output to the format expected by benchmark-action
-          jq -r '.[] | select(.name != null) | "\(.name) \(.median)"' filtered.txt > benchmark.txt
+          # Build benchmarks first
+          cargo bench --no-run
+          # Run benchmarks and capture only the JSON output
+          cargo bench -- -Z unstable-options --format json --bench '*' > output.txt
+          # Process the JSON output
+          cat output.txt | jq -r '.[] | select(.name != null) | "\(.name) \(.median)"' > benchmark.txt
 
       - name: Store benchmark result
         uses: benchmark-action/github-action-benchmark@v1
