@@ -218,8 +218,19 @@ async fn scrape_properties(cmd: &ScrapeCommand, db: Arc<Database>) -> Result<()>
             Some(Arc::clone(&db)),
         );
 
-        let properties = scraper.scrape_listing(query, cmd.max_pages).await?;
-        // ... rest of the function ...
+        let results = scraper.scrape_listing(query, cmd.max_pages).await?;
+        
+        // Display properties in the same format as the list command
+        let mut displays = Vec::new();
+        for (property, _images) in &results {
+            let price_history = db.get_price_history(property.id.unwrap()).await?;
+            displays.push(PropertyDisplay::new(property.clone(), price_history));
+        }
+
+        let table = create_property_table(&displays, 1); // Use default graph height of 1
+        println!("{}", table);
+
+        info!("Found {} properties", results.len());
     }
     Ok(())
 }
@@ -240,8 +251,19 @@ async fn update_properties(cmd: &UpdateCommand, db: Arc<Database>) -> Result<()>
                 Some(Arc::clone(&db)),
             );
 
-            let updated = scraper.scrape_listing(query, cmd.max_pages.unwrap_or(1)).await?;
-            // ... rest of the function ...
+            let results = scraper.scrape_listing(query, cmd.max_pages.unwrap_or(1)).await?;
+            
+            // Display updated properties in the same format as the list command
+            let mut displays = Vec::new();
+            for (property, _images) in &results {
+                let price_history = db.get_price_history(property.id.unwrap()).await?;
+                displays.push(PropertyDisplay::new(property.clone(), price_history));
+            }
+
+            let table = create_property_table(&displays, 1); // Use default graph height of 1
+            println!("{}", table);
+
+            info!("Updated {} properties", results.len());
         }
     }
     Ok(())
