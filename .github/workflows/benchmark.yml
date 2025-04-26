@@ -11,6 +11,11 @@ env:
   RUST_BACKTRACE: 1
   RUST_LOG: info
 
+permissions:
+  issues: write
+  pull-requests: write
+  contents: write
+
 jobs:
   benchmark:
     name: Run benchmarks
