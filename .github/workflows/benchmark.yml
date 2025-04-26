@@ -42,7 +42,7 @@ jobs:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           auto-push: true
           # Alert if performance regresses more than 10%
-          alert-threshold: '110'
+          alert-threshold: '110%'
           comment-on-alert: true
           fail-on-alert: true
           # Save benchmark results in gh-pages branch
