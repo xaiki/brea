@@ -1,6 +1,6 @@
 use criterion::{black_box, criterion_group, criterion_main, Criterion, BenchmarkId};
 use tokio::runtime::Runtime;
-use brea_core::{Database, Property, PropertyType};
+use brea_core::{Database, Property, PropertyType, PropertyStatus};
 use brea_scrapers::{argenprop::ArgenPropScraper, Scraper, ScrapeQuery};
 use fake::{Fake, Faker};
 use rand::Rng;
@@ -35,6 +35,7 @@ fn generate_fake_properties(count: usize) -> Vec<Property> {
                 url: Url::parse("https://example.com").unwrap(),
                 created_at: Utc::now(),
                 updated_at: Utc::now(),
+                status: PropertyStatus::Active,
             };
             property
         })
