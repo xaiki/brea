@@ -1,0 +1,11 @@
+[package]
+name = "brea-integration-tests"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+brea-core = { path = "../crates/brea-core" }
+brea-scrapers = { path = "../crates/brea-scrapers" }
+tokio = { version = "1.0", features = ["full"] }
+tempfile = "3.0"
+tokio-test = "0.4" 
