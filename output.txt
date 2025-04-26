@@ -1,0 +1,55 @@
+database/insert/10      time:   [1.7968 ms 1.8307 ms 1.9150 ms]
+                        change: [-0.0423% +5.8120% +12.516%] (p = 0.07 > 0.05)
+                        No change in performance detected.
+Found 2 outliers among 10 measurements (20.00%)
+  2 (20.00%) high mild
+database/insert/100     time:   [7.5969 ms 7.7132 ms 7.8276 ms]
+                        change: [-15.986% -8.9378% -1.9008%] (p = 0.03 < 0.05)
+                        Performance has improved.
+Found 1 outliers among 10 measurements (10.00%)
+  1 (10.00%) high mild
+database/insert/1000    time:   [66.104 ms 66.775 ms 67.575 ms]
+                        change: [-17.494% -12.878% -7.9200%] (p = 0.00 < 0.05)
+                        Performance has improved.
+database/query/10       time:   [1.8690 ms 1.9136 ms 1.9589 ms]
+                        change: [-4.6210% -2.9668% -0.7254%] (p = 0.01 < 0.05)
+                        Change within noise threshold.
+database/query/100      time:   [8.4022 ms 8.4411 ms 8.4689 ms]
+                        change: [-3.2049% -2.3011% -1.4315%] (p = 0.00 < 0.05)
+                        Performance has improved.
+database/query/1000     time:   [74.487 ms 75.303 ms 76.411 ms]
+                        change: [-14.567% -6.9740% -1.1509%] (p = 0.08 > 0.05)
+                        No change in performance detected.
+Found 1 outliers among 10 measurements (10.00%)
+  1 (10.00%) high severe
+
+scraper/scrape_query    time:   [57.605 ms 58.367 ms 60.138 ms]
+                        change: [-37.786% -19.757% +1.1938%] (p = 0.15 > 0.05)
+                        No change in performance detected.
+Found 1 outliers among 10 measurements (10.00%)
+  1 (10.00%) high severe
+scraper/html_parsing    time:   [57.180 ms 60.839 ms 69.059 ms]
+                        change: [-23.313% -7.3926% +10.814%] (p = 0.46 > 0.05)
+                        No change in performance detected.
+Found 1 outliers among 10 measurements (10.00%)
+  1 (10.00%) high mild
+
+concurrent/concurrent_insert/10
+                        time:   [21.689 ms 21.901 ms 22.128 ms]
+                        change: [+5.7121% +6.8236% +7.9365%] (p = 0.00 < 0.05)
+                        Performance has regressed.
+concurrent/concurrent_insert/100
+                        time:   [216.83 ms 217.59 ms 218.39 ms]
+                        change: [-0.1757% +1.8396% +3.5966%] (p = 0.08 > 0.05)
+                        No change in performance detected.
+concurrent/concurrent_query/10
+                        time:   [3.7766 ms 3.7962 ms 3.8200 ms]
+                        change: [-0.3314% +0.5526% +1.3653%] (p = 0.24 > 0.05)
+                        No change in performance detected.
+concurrent/concurrent_query/100
+                        time:   [92.714 ms 93.092 ms 93.438 ms]
+                        change: [-0.6749% +0.1685% +0.9484%] (p = 0.70 > 0.05)
+                        No change in performance detected.
+Found 1 outliers among 10 measurements (10.00%)
+  1 (10.00%) low mild
+

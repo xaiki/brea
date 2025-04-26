@@ -1,7 +1,7 @@
 use crate::{
     Property, PropertyImage, Result, BreaError, PropertyStatus,
 };
-use chrono::{DateTime, Utc, TimeZone};
+use chrono::{DateTime, Utc};
 use sqlx::{sqlite::SqlitePool, QueryBuilder, Row, Sqlite, Column, TypeInfo};
 use std::path::Path;
 use std::fs;

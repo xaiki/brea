@@ -1,5 +1,5 @@
 use async_trait::async_trait;
-use brea_core::{BreaError, Property, PropertyImage, PropertyType, PropertyStatus, Result, Database};
+use brea_core::{BreaError, Property, PropertyImage, PropertyType, PropertyStatus, Result};
 use crate::{PropertyTypeTranslator, Scraper, ScrapeQuery};
 use chrono::Utc;
 use reqwest::Client;

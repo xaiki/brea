@@ -3,7 +3,6 @@ pub mod argenprop;
 use brea_core::{Database, Property, PropertyImage, PropertyType, Result};
 use std::sync::Arc;
 use async_trait::async_trait;
-use chrono::Utc;
 
 pub use argenprop::ArgenPropScraper;
 
