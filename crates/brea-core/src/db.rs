@@ -343,44 +343,65 @@ impl Database {
     pub async fn save_property(&self, property: &mut Property) -> Result<()> {
         let Property {
             id,
+            external_id,
+            source,
+            property_type,
+            district,
+            title,
+            description,
             price_usd,
             address,
-            district,
             covered_size,
             rooms,
             antiquity,
             url,
             created_at,
             updated_at,
-            ..
         } = property;
 
         let row = sqlx::query(
             r#"
             INSERT INTO properties (
-                id, price_usd, address, district, covered_size, rooms, antiquity, url, created_at, updated_at
+                id, external_id, source, property_type, district, title, description,
+                price_usd, address, covered_size, rooms, antiquity, url, created_at, updated_at
             ) VALUES (
-                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
             )
+            ON CONFLICT(source, external_id) DO UPDATE SET
+                property_type = excluded.property_type,
+                district = excluded.district,
+                title = excluded.title,
+                description = excluded.description,
+                price_usd = excluded.price_usd,
+                address = excluded.address,
+                covered_size = excluded.covered_size,
+                rooms = excluded.rooms,
+                antiquity = excluded.antiquity,
+                url = excluded.url,
+                updated_at = excluded.updated_at
+            RETURNING id
             "#,
         )
         .bind(*id)
+        .bind(external_id.as_str())
+        .bind(source.as_str())
+        .bind(property_type.as_ref().map(|t| t.to_string()))
+        .bind(district.as_str())
+        .bind(title.as_str())
+        .bind(description.as_deref())
         .bind(*price_usd)
         .bind(address.as_str())
-        .bind(district.as_str())
         .bind(covered_size.map(|v| v as f64))
         .bind(rooms.map(|v| v as i32))
         .bind(antiquity.map(|v| v as i32))
         .bind(url.to_string())
         .bind(*created_at)
         .bind(*updated_at)
-        .execute(&self.pool)
+        .fetch_one(&self.pool)
         .await?;
 
-        // Update the property ID if it was None
-        if property.id.is_none() {
-            property.id = Some(row.last_insert_rowid());
-        }
+        // Update the property ID
+        property.id = Some(row.get::<i64, _>(0));
 
         Ok(())
     }
@@ -522,10 +543,10 @@ impl Database {
             WHERE id IN (
                 SELECT id 
                 FROM ranked_prices
-                WHERE daily_rank > 1  -- Not the first record of the day
-                AND (
-                    prev_price IS NULL  -- Keep first record for each property
-                    OR ABS(price_usd - prev_price) < prev_price * 0.001  -- Delete if price didn't change
+                WHERE (
+                    daily_rank > 1  -- Not the first record of the day
+                    AND prev_price IS NOT NULL  -- Not the first record for the property
+                    AND ABS(price_usd - prev_price) < prev_price * 0.001  -- Price didn't change significantly
                 )
             )
             "#,
@@ -677,44 +698,46 @@ mod tests {
         for i in 0..24 {
             // Create 24 records, one per hour for a day
             let time = now - Duration::hours(i);
+            let price = if i == 12 { 110000.0 } else { 100000.0 }; // Price change at hour 12
             sqlx::query(
                 r#"
                 INSERT INTO property_price_history (property_id, price_usd, observed_at)
                 VALUES (?, ?, ?)
+                ON CONFLICT(property_id, observed_at) DO UPDATE SET
+                    price_usd = excluded.price_usd
                 "#,
             )
             .bind(id)
-            .bind(100000.0) // Same price
+            .bind(price)
             .bind(time)
             .execute(&db.pool)
             .await
             .unwrap();
         }
 
-        // Add one record with a price change
-        sqlx::query(
-            r#"
-            INSERT INTO property_price_history (property_id, price_usd, observed_at)
-            VALUES (?, ?, ?)
-            "#,
-        )
-        .bind(id)
-        .bind(110000.0) // Price change
-        .bind(now - Duration::hours(12))
-        .execute(&db.pool)
-        .await
-        .unwrap();
-
         // Count initial records
         let initial_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM property_price_history")
             .fetch_one(&db.pool)
             .await
             .unwrap();
-        assert_eq!(initial_count, 25); // 24 same price + 1 price change
+        assert_eq!(initial_count, 24, "Expected 24 initial records");
 
         // Run cleanup
         let cleaned = db.cleanup_price_history().await.unwrap();
-        assert!(cleaned > 0);
+        println!("Cleaned {} records", cleaned);
+
+        // Get remaining records for debugging
+        let remaining_records: Vec<(f64, DateTime<Utc>)> = sqlx::query_as(
+            "SELECT price_usd, observed_at FROM property_price_history ORDER BY observed_at"
+        )
+        .fetch_all(&db.pool)
+        .await
+        .unwrap();
+
+        println!("Remaining records:");
+        for (price, time) in &remaining_records {
+            println!("Price: {}, Time: {}", price, time);
+        }
 
         // Verify we kept only the important records
         let final_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM property_price_history")
@@ -725,6 +748,20 @@ mod tests {
         // We should have kept:
         // 1. The first record of the day
         // 2. The record where price changed
-        assert_eq!(final_count, 2);
+        // 3. The first record of the next day
+        assert_eq!(final_count, 3, "Expected to keep 3 records: first record of each day and price change record");
+
+        // Verify the records we kept
+        let remaining_records: Vec<(f64, DateTime<Utc>)> = sqlx::query_as(
+            "SELECT price_usd, observed_at FROM property_price_history ORDER BY observed_at"
+        )
+        .fetch_all(&db.pool)
+        .await
+        .unwrap();
+
+        assert_eq!(remaining_records.len(), 3);
+        assert_eq!(remaining_records[0].0, 100000.0); // First record of first day
+        assert_eq!(remaining_records[1].0, 110000.0); // Price change
+        assert_eq!(remaining_records[2].0, 100000.0); // First record of next day
     }
 } 
