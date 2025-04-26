@@ -28,7 +28,7 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y sqlite3 libsqlite3-dev
 
       - name: Run benchmarks
-        run: cargo bench -- --output-format bencher | tee output.txt
+        run: cargo bench -- --verbose | tee output.txt
 
       - name: Store benchmark result
         uses: benchmark-action/github-action-benchmark@v1
