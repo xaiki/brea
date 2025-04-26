@@ -199,4 +199,5 @@ criterion_group!(
     bench_scraper_operations,
     bench_concurrent_operations
 );
+
 criterion_main!(benches); 
