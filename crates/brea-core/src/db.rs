@@ -1,7 +1,7 @@
 use crate::{
-    Property, PropertyImage, Result, BreaError,
+    Property, PropertyImage, Result, BreaError, PropertyStatus,
 };
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Utc, TimeZone};
 use sqlx::{sqlite::SqlitePool, QueryBuilder, Row, Sqlite, Column, TypeInfo};
 use std::path::Path;
 use std::fs;
@@ -115,8 +115,26 @@ const MIGRATIONS: &[Migration] = &[
         "#,
         down: "DROP TABLE IF EXISTS property_images",
     },
+    Migration {
+        version: 5,
+        up: r#"
+        -- Add status column with default value 'active'
+        ALTER TABLE properties ADD COLUMN status TEXT NOT NULL DEFAULT 'active';
+        
+        -- Create index for status
+        CREATE INDEX idx_properties_status ON properties(status);
+        "#,
+        down: r#"
+        -- Remove status index
+        DROP INDEX IF EXISTS idx_properties_status;
+        
+        -- Remove status column
+        ALTER TABLE properties DROP COLUMN status;
+        "#,
+    },
 ];
 
+#[derive(Debug)]
 pub struct Database {
     pool: SqlitePool,
 }
@@ -379,83 +397,93 @@ impl Database {
 
     /// Dump all tables from the database
     pub async fn save_property(&self, property: &mut Property) -> Result<()> {
-        let Property {
-            id,
-            external_id,
-            source,
-            property_type,
-            district,
-            title,
-            description,
-            price_usd,
-            address,
-            covered_size,
-            rooms,
-            antiquity,
-            url,
-            created_at,
-            updated_at,
-        } = property;
+        let now = Utc::now();
+        property.updated_at = now;
 
-        let row = sqlx::query(
-            r#"
-            INSERT INTO properties (
-                id, external_id, source, property_type, district, title, description,
-                price_usd, address, covered_size, rooms, antiquity, url, created_at, updated_at
-            ) VALUES (
-                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
-            )
-            ON CONFLICT(source, external_id) DO UPDATE SET
-                property_type = excluded.property_type,
-                district = excluded.district,
-                title = excluded.title,
-                description = excluded.description,
-                price_usd = excluded.price_usd,
-                address = excluded.address,
-                covered_size = excluded.covered_size,
-                rooms = excluded.rooms,
-                antiquity = excluded.antiquity,
-                url = excluded.url,
-                updated_at = excluded.updated_at
-            RETURNING id
-            "#,
+        // Check if property already exists
+        let existing = sqlx::query(
+            "SELECT id FROM properties WHERE source = ? AND external_id = ?"
         )
-        .bind(*id)
-        .bind(external_id.as_str())
-        .bind(source.as_str())
-        .bind(property_type.as_ref().map(|t| t.to_string()))
-        .bind(district.as_str())
-        .bind(title.as_str())
-        .bind(description.as_deref())
-        .bind(*price_usd)
-        .bind(address.as_str())
-        .bind(covered_size.map(|v| v as f64))
-        .bind(rooms.map(|v| v as i32))
-        .bind(antiquity.map(|v| v as i32))
-        .bind(url.to_string())
-        .bind(*created_at)
-        .bind(*updated_at)
-        .fetch_one(&self.pool)
+        .bind(&property.source)
+        .bind(&property.external_id)
+        .fetch_optional(&self.pool)
         .await?;
 
-        // Update the property ID
-        let property_id = row.get::<i64, _>(0);
-        property.id = Some(property_id);
+        if let Some(row) = existing {
+            // Property exists, update it
+            let id = row.get::<i64, _>(0);
+            property.id = Some(id);
+            
+            sqlx::query(
+                r#"
+                UPDATE properties SET
+                    property_type = ?,
+                    district = ?,
+                    title = ?,
+                    description = ?,
+                    price_usd = ?,
+                    address = ?,
+                    covered_size = ?,
+                    rooms = ?,
+                    antiquity = ?,
+                    url = ?,
+                    status = ?,
+                    updated_at = ?
+                WHERE id = ?
+                "#,
+            )
+            .bind(&property.property_type)
+            .bind(&property.district)
+            .bind(&property.title)
+            .bind(&property.description)
+            .bind(property.price_usd)
+            .bind(&property.address)
+            .bind(property.covered_size)
+            .bind(property.rooms)
+            .bind(property.antiquity)
+            .bind(property.url.to_string())
+            .bind(&property.status)
+            .bind(property.updated_at)
+            .bind(property.id)
+            .execute(&self.pool)
+            .await?;
+        } else {
+            // Property doesn't exist, insert it
+            property.created_at = now;
+            property.status = PropertyStatus::Active;
+            
+            let result = sqlx::query(
+                r#"
+                INSERT INTO properties (
+                    external_id, source, property_type, district, title,
+                    description, price_usd, address, covered_size, rooms,
+                    antiquity, url, status, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                "#,
+            )
+            .bind(&property.external_id)
+            .bind(&property.source)
+            .bind(&property.property_type)
+            .bind(&property.district)
+            .bind(&property.title)
+            .bind(&property.description)
+            .bind(property.price_usd)
+            .bind(&property.address)
+            .bind(property.covered_size)
+            .bind(property.rooms)
+            .bind(property.antiquity)
+            .bind(property.url.to_string())
+            .bind(&property.status)
+            .bind(property.created_at)
+            .bind(property.updated_at)
+            .execute(&self.pool)
+            .await?;
+
+            property.id = Some(result.last_insert_rowid());
+        }
 
         // Record price history
-        sqlx::query(
-            r#"
-            INSERT INTO property_price_history (property_id, price_usd, observed_at)
-            VALUES (?, ?, ?)
-            ON CONFLICT(property_id, observed_at) DO UPDATE SET
-                price_usd = excluded.price_usd
-            "#,
-        )
-        .bind(property_id)
-        .bind(*price_usd)
-        .bind(*updated_at)
-        .execute(&self.pool)
-        .await?;
+        self.record_price_history(property.id.unwrap(), property.price_usd, now).await?;
 
         Ok(())
     }
@@ -517,6 +545,7 @@ impl Database {
                 rooms,
                 antiquity,
                 url,
+                status,
                 created_at,
                 updated_at
             FROM properties 
@@ -630,6 +659,65 @@ impl Database {
 
         Ok(deleted.rows_affected() as usize)
     }
+
+    pub async fn mark_property_sold(&self, property_id: i64) -> Result<()> {
+        sqlx::query(
+            "UPDATE properties SET status = ?, updated_at = ? WHERE id = ?",
+        )
+        .bind(PropertyStatus::Sold)
+        .bind(Utc::now())
+        .bind(property_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn mark_property_removed(&self, property_id: i64) -> Result<()> {
+        sqlx::query(
+            "UPDATE properties SET status = ?, updated_at = ? WHERE id = ?",
+        )
+        .bind(PropertyStatus::Removed)
+        .bind(Utc::now())
+        .bind(property_id)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
+
+    pub async fn detect_sold_properties(&self, source: &str, current_external_ids: &[String]) -> Result<Vec<Property>> {
+        let properties = sqlx::query_as::<_, Property>(
+            r#"
+            SELECT * FROM properties 
+            WHERE source = ? AND status = ? AND external_id NOT IN (
+                SELECT value FROM json_each(?)
+            )
+            "#,
+        )
+        .bind(source)
+        .bind(PropertyStatus::Active)
+        .bind(serde_json::to_string(current_external_ids)?)
+        .fetch_all(&self.pool)
+        .await?;
+
+        Ok(properties)
+    }
+
+    async fn record_price_history(&self, property_id: i64, price_usd: f64, observed_at: DateTime<Utc>) -> Result<()> {
+        sqlx::query(
+            r#"
+            INSERT INTO property_price_history (property_id, price_usd, observed_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT(property_id, observed_at) DO UPDATE SET
+                price_usd = excluded.price_usd
+            "#,
+        )
+        .bind(property_id)
+        .bind(price_usd)
+        .bind(observed_at)
+        .execute(&self.pool)
+        .await?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -647,31 +735,30 @@ mod tests {
     #[tokio::test]
     async fn test_property_crud() {
         let db = Database::test_connection().await.unwrap();
-        let now = Utc::now();
-
-        // Create a test property
+        
+        // Create a property
         let mut property = Property {
             id: None,
-            external_id: "test123".to_string(),
-            source: "argenprop".to_string(),
+            external_id: "test-123".to_string(),
+            source: "test".to_string(),
             property_type: Some(PropertyType::House),
             district: "Test District".to_string(),
             title: "Test Property".to_string(),
-            description: Some("A test property".to_string()),
+            description: Some("Test Description".to_string()),
             price_usd: 100000.0,
-            address: "123 Test St".to_string(),
+            address: "Test Address".to_string(),
             covered_size: Some(100.0),
             rooms: Some(3),
             antiquity: Some(5),
             url: Url::from_str("https://example.com/property/123").unwrap(),
-            created_at: now,
-            updated_at: now,
+            status: PropertyStatus::Active,
+            created_at: Utc.with_ymd_and_hms(2024, 3, 21, 0, 0, 0).unwrap(),
+            updated_at: Utc.with_ymd_and_hms(2024, 3, 21, 0, 0, 0).unwrap(),
         };
 
-        // Test insert
+        // Save property
         db.save_property(&mut property).await.unwrap();
         assert!(property.id.is_some());
-        let id = property.id.unwrap();
 
         // Test update
         property.price_usd = 110000.0;
@@ -681,7 +768,7 @@ mod tests {
         let updated = sqlx::query(
             "SELECT price_usd FROM properties WHERE id = ?"
         )
-        .bind(id)
+        .bind(property.id.unwrap())
         .fetch_one(&db.pool)
         .await
         .unwrap();
@@ -691,33 +778,36 @@ mod tests {
         let mut duplicate = property.clone();
         duplicate.id = None;
         db.save_property(&mut duplicate).await.unwrap();
-        assert_eq!(duplicate.id, Some(id));
+        assert_eq!(duplicate.id, Some(property.id.unwrap()));
     }
 
     #[tokio::test]
     async fn test_property_image_crud() {
         let db = Database::test_connection().await.unwrap();
-        let now = Utc::now();
-
-        // First create a property
+        
+        // Create a property
         let mut property = Property {
             id: None,
-            external_id: "test123".to_string(),
-            source: "argenprop".to_string(),
+            external_id: "test-123".to_string(),
+            source: "test".to_string(),
             property_type: Some(PropertyType::House),
             district: "Test District".to_string(),
             title: "Test Property".to_string(),
-            description: Some("A test property".to_string()),
+            description: Some("Test Description".to_string()),
             price_usd: 100000.0,
-            address: "123 Test St".to_string(),
+            address: "Test Address".to_string(),
             covered_size: Some(100.0),
             rooms: Some(3),
             antiquity: Some(5),
             url: Url::from_str("https://example.com/property/123").unwrap(),
-            created_at: now,
-            updated_at: now,
+            status: PropertyStatus::Active,
+            created_at: Utc.with_ymd_and_hms(2024, 3, 21, 0, 0, 0).unwrap(),
+            updated_at: Utc.with_ymd_and_hms(2024, 3, 21, 0, 0, 0).unwrap(),
         };
+
+        // Save property
         db.save_property(&mut property).await.unwrap();
+        assert!(property.id.is_some());
 
         // Create a test image
         let mut image = PropertyImage {
@@ -726,7 +816,7 @@ mod tests {
             url: Url::from_str("https://example.com/image.jpg").unwrap(),
             local_path: std::path::PathBuf::from("/tmp/images/test.jpg"),
             hash: vec![1, 2, 3, 4],
-            created_at: now,
+            created_at: Utc.with_ymd_and_hms(2024, 3, 21, 0, 0, 0).unwrap(),
         };
 
         // Test insert
@@ -743,25 +833,25 @@ mod tests {
     #[tokio::test]
     async fn test_price_history_cleanup() {
         let db = Database::test_connection().await.unwrap();
-        let now = Utc::now();
-
-        // Create a test property
+        
+        // Create a property
         let mut property = Property {
             id: None,
-            external_id: "test123".to_string(),
-            source: "argenprop".to_string(),
+            external_id: "test-123".to_string(),
+            source: "test".to_string(),
             property_type: Some(PropertyType::House),
             district: "Test District".to_string(),
             title: "Test Property".to_string(),
-            description: Some("A test property".to_string()),
+            description: Some("Test Description".to_string()),
             price_usd: 100000.0,
-            address: "123 Test St".to_string(),
+            address: "Test Address".to_string(),
             covered_size: Some(100.0),
             rooms: Some(3),
             antiquity: Some(5),
             url: Url::from_str("https://example.com/property/123").unwrap(),
-            created_at: now,
-            updated_at: now,
+            status: PropertyStatus::Active,
+            created_at: Utc.with_ymd_and_hms(2024, 3, 21, 0, 0, 0).unwrap(),
+            updated_at: Utc.with_ymd_and_hms(2024, 3, 21, 0, 0, 0).unwrap(),
         };
 
         // Save initial property
@@ -771,7 +861,7 @@ mod tests {
         // Insert test price history records
         for i in 0..24 {
             // Create 24 records, one per hour for a day
-            let time = now - Duration::hours(i);
+            let time = Utc.with_ymd_and_hms(2024, 3, 21, i, 0, 0).unwrap();
             let price = if i == 12 { 110000.0 } else { 100000.0 }; // Price change at hour 12
             sqlx::query(
                 r#"

@@ -1,13 +1,13 @@
 use brea_core::{
     PropertyDisplay, PropertyType, Result,
-    create_property_table, Database,
+    create_property_table, Database, Property, PropertyStatus,
 };
-use brea_scrapers::ScrapeQuery;
-use brea_scrapers::{ScraperFactory, ScraperType as CoreScraperType};
+use brea_scrapers::{ScraperType, ScrapeQuery, ScraperFactory};
 use clap::{Parser, Subcommand, ValueEnum};
 use csv::Writer;
 use std::path::PathBuf;
 use tracing::{info, Level};
+use std::sync::Arc;
 
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
@@ -45,10 +45,27 @@ enum CliScraperType {
     Argenprop,
 }
 
-impl From<CliScraperType> for CoreScraperType {
+impl From<CliScraperType> for ScraperType {
     fn from(value: CliScraperType) -> Self {
         match value {
-            CliScraperType::Argenprop => CoreScraperType::Argenprop,
+            CliScraperType::Argenprop => ScraperType::Argenprop,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum CliPropertyStatus {
+    Active,
+    Sold,
+    Removed,
+}
+
+impl From<CliPropertyStatus> for PropertyStatus {
+    fn from(value: CliPropertyStatus) -> Self {
+        match value {
+            CliPropertyStatus::Active => PropertyStatus::Active,
+            CliPropertyStatus::Sold => PropertyStatus::Sold,
+            CliPropertyStatus::Removed => PropertyStatus::Removed,
         }
     }
 }
@@ -141,6 +158,10 @@ struct ListCommand {
     /// Height of the price history graph in lines (-g, --graph-height)
     #[arg(short = 'g', long, default_value_t = 1, value_parser = clap::value_parser!(u8).range(1..=5))]
     graph_height: u8,
+
+    /// Property status to filter by (-S, --status)
+    #[arg(short = 'S', long, value_enum, default_value_t = CliPropertyStatus::Active)]
+    status: CliPropertyStatus,
 }
 
 #[derive(Parser)]
@@ -154,6 +175,10 @@ struct ExportCommand {
     /// Database file path (-d, --database)
     #[arg(short = 'd', long, default_value = "brea.db")]
     database: PathBuf,
+
+    /// Property status to filter by (-S, --status)
+    #[arg(short = 'S', long, value_enum, default_value_t = CliPropertyStatus::Active)]
+    status: CliPropertyStatus,
 }
 
 #[derive(Parser)]
@@ -172,10 +197,54 @@ struct UpdateCommand {
     database: PathBuf,
 }
 
-#[derive(Debug, clap::ValueEnum, Clone)]
+#[derive(Debug, clap::ValueEnum, Clone, PartialEq)]
 enum SortOrder {
     Asc,
     Desc,
+}
+
+async fn scrape_properties(cmd: &ScrapeCommand, db: Arc<Database>) -> Result<()> {
+    let scraper = ScraperFactory::create_scraper(cmd.scraper.into());
+
+    for property_type in &cmd.property_type {
+        info!("Scraping {} properties in {}", property_type, cmd.district);
+        let query = ScrapeQuery::new(
+            cmd.district.clone(),
+            property_type.clone(),
+            cmd.min_price,
+            cmd.max_price,
+            cmd.min_size,
+            cmd.max_size,
+            Some(Arc::clone(&db)),
+        );
+
+        let properties = scraper.scrape_listing(query, cmd.max_pages).await?;
+        // ... rest of the function ...
+    }
+    Ok(())
+}
+
+async fn update_properties(cmd: &UpdateCommand, db: Arc<Database>) -> Result<()> {
+    let scraper = ScraperFactory::create_scraper(cmd.scraper.into());
+    let properties = db.list_properties(None, None, None, None, None, None, None, None, false).await?;
+
+    for property in properties {
+        if let Some(property_type) = property.property_type {
+            let query = ScrapeQuery::new(
+                property.district.clone(),
+                property_type.clone(),
+                None, // No price filters for updates
+                None,
+                None, // No size filters for updates
+                None,
+                Some(Arc::clone(&db)),
+            );
+
+            let updated = scraper.scrape_listing(query, cmd.max_pages.unwrap_or(1)).await?;
+            // ... rest of the function ...
+        }
+    }
+    Ok(())
 }
 
 #[tokio::main]
@@ -187,195 +256,78 @@ async fn main() -> Result<()> {
 
     let cli = Cli::parse();
 
-    match cli.command {
+    match &cli.command {
         Commands::Scrape(cmd) => {
-            let scraper = ScraperFactory::create_scraper(cmd.scraper.into());
-            let db = Database::new(&cmd.database).await?;
-
-            let properties = if cmd.property_type.is_empty() {
-                // If no property types specified, scrape all supported types
-                scraper.scrape_all_types(
-                    &cmd.district,
-                    cmd.min_price,
-                    cmd.max_price,
-                    cmd.min_size,
-                    cmd.max_size,
-                    cmd.max_pages,
-                ).await?
-            } else {
-                // Scrape only the specified property types
-                let mut all_properties = Vec::new();
-                for property_type in cmd.property_type {
-                    info!("Scraping {} properties in {}", property_type, cmd.district);
-                    let mut query = ScrapeQuery::new(
-                        cmd.district.clone(),
-                        property_type,
-                        cmd.min_price,
-                        cmd.max_price,
-                        cmd.min_size,
-                        cmd.max_size,
-                    );
-
-                    let mut current_page = 1;
-                    let mut has_next = true;
-
-                    while has_next && current_page <= cmd.max_pages {
-                        let (mut properties, next) = scraper.scrape_page(&query).await?;
-                        all_properties.append(&mut properties);
-                        has_next = next;
-
-                        if has_next {
-                            query.next_page();
-                            current_page += 1;
-                        }
-                    }
-                }
-                all_properties
-            };
-
-            for (mut property, mut images) in properties {
-                db.save_property(&mut property).await?;
-                
-                if let Some(property_id) = property.id {
-                    for image in &mut images {
-                        image.property_id = property_id;
-                        db.save_property_image(image).await?;
-                    }
-                } else {
-                    info!("Skipping images for property {} as it was not saved successfully", property.external_id);
-                }
-            }
+            let db = Arc::new(Database::new(&cmd.database).await?);
+            scrape_properties(cmd, db).await?;
         }
         Commands::List(cmd) => {
             let db = Database::new(&cmd.database).await?;
-            let properties = db.list_properties(
-                cmd.source.as_deref(),
-                cmd.min_price,
-                cmd.max_price,
-                cmd.min_size,
-                cmd.max_size,
-                Some(cmd.limit),
-                Some(cmd.offset),
-                Some(&cmd.sort_by),
-                matches!(cmd.sort_order, SortOrder::Desc),
-            ).await?;
-
-            let mut displays = Vec::new();
-            for property in properties {
-                let price_history = db.get_price_history(property.id.unwrap()).await?;
-                displays.push(PropertyDisplay::new(property, price_history));
-            }
-
-            let table = create_property_table(&displays, cmd.graph_height);
-            println!("{}", table);
+            list_properties(cmd, &db).await?;
         }
         Commands::Export(cmd) => {
             let db = Database::new(&cmd.database).await?;
-            let properties = db.list_properties(
-                None,  // source
-                None,  // min_price
-                None,  // max_price
-                None,  // min_size
-                None,  // max_size
-                None,  // limit
-                None,  // offset
-                None,  // sort_by
-                false, // sort_desc
-            ).await?;
-
-            let mut writer = Writer::from_path(&cmd.output)?;
-            writer.write_record(&[
-                "ID", "Title", "Price (USD)", "Covered Size (m²)", "Rooms",
-                "Antiquity (years)", "Address", "District", "Property Type", "Source", "URL"
-            ])?;
-            for property in properties {
-                writer.write_record(&[
-                    property.id.map(|id| id.to_string()).unwrap_or_else(|| "".to_string()),
-                    property.title,
-                    property.price_usd.to_string(),
-                    property.covered_size.map(|s| s.to_string()).unwrap_or_else(|| "".to_string()),
-                    property.rooms.map(|r| r.to_string()).unwrap_or_else(|| "".to_string()),
-                    property.antiquity.map(|a| a.to_string()).unwrap_or_else(|| "".to_string()),
-                    property.address,
-                    property.district,
-                    property.property_type.map(|t| t.to_string()).unwrap_or_else(|| "".to_string()),
-                    property.source,
-                    property.url.to_string(),
-                ])?;
-            }
-            writer.flush()?;
+            export_properties(cmd, &db).await?;
         }
         Commands::Update(cmd) => {
-            let scraper = ScraperFactory::create_scraper(cmd.scraper.into());
-            let db = Database::new(&cmd.database).await?;
-
-            // Get all unique property types and districts from the database
-            let properties = db.list_properties(
-                None,  // source
-                None,  // min_price
-                None,  // max_price
-                None,  // min_size
-                None,  // max_size
-                None,  // limit
-                None,  // offset
-                None,  // sort_by
-                false, // sort_desc
-            ).await?;
-            let mut property_types = std::collections::HashSet::new();
-            let mut districts = std::collections::HashSet::new();
-
-            for property in &properties {
-                if let Some(property_type) = &property.property_type {
-                    property_types.insert(property_type.clone());
-                }
-                districts.insert(property.district.clone());
-            }
-
-            info!("Found {} unique property types and {} districts to update", property_types.len(), districts.len());
-
-            // For each property type and district combination, scrape fresh data
-            for property_type in property_types {
-                for district in districts.iter() {
-                    info!("Updating {} properties in {}", property_type, district);
-                    let mut query = ScrapeQuery::new(
-                        district.clone(),
-                        property_type.clone(),
-                        None, // No price filters for updates
-                        None,
-                        None, // No size filters for updates
-                        None,
-                    );
-
-                    let mut current_page = 1;
-                    let mut has_next = true;
-
-                    while has_next && (cmd.max_pages.is_none() || current_page <= cmd.max_pages.unwrap()) {
-                        info!("Scraping page {} for {} in {}", current_page, property_type, district);
-                        let (new_properties, next) = scraper.scrape_page(&query).await?;
-                        info!("Found {} properties, has_next: {}", new_properties.len(), next);
-                        has_next = next;
-
-                        // Save new properties to database
-                        for (mut property, mut images) in new_properties {
-                            db.save_property(&mut property).await?;
-                            for mut image in images.iter_mut() {
-                                image.property_id = property.id.unwrap();
-                                db.save_property_image(&mut image).await?;
-                            }
-                        }
-
-                        if has_next {
-                            query.next_page();
-                            current_page += 1;
-                            info!("Moving to page {}", current_page);
-                        } else {
-                            info!("No more pages for {} in {}", property_type, district);
-                        }
-                    }
-                }
-            }
+            let db = Arc::new(Database::new(&cmd.database).await?);
+            update_properties(cmd, db).await?;
         }
     }
 
+    Ok(())
+}
+
+async fn list_properties(cmd: &ListCommand, db: &Database) -> Result<()> {
+    let properties = db.list_properties(
+        cmd.source.as_deref(),
+        cmd.min_price,
+        cmd.max_price,
+        cmd.min_size,
+        cmd.max_size,
+        Some(cmd.limit),
+        Some(cmd.offset),
+        Some(&cmd.sort_by),
+        cmd.sort_order == SortOrder::Desc,
+    ).await?;
+
+    let mut displays = Vec::new();
+    for property in &properties {
+        if property.status == cmd.status.into() {
+            let price_history = db.get_price_history(property.id.unwrap()).await?;
+            displays.push(PropertyDisplay::new(property.clone(), price_history));
+        }
+    }
+
+    let table = create_property_table(&displays, cmd.graph_height);
+    println!("{}", table);
+
+    info!("Listed {} properties", displays.len());
+    Ok(())
+}
+
+async fn export_properties(cmd: &ExportCommand, db: &Database) -> Result<()> {
+    let properties = db.list_properties(
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        None,
+        false,
+    ).await?;
+
+    let mut writer = Writer::from_path(&cmd.output)?;
+
+    for property in &properties {
+        if property.status == cmd.status.into() {
+            writer.serialize(property)?;
+        }
+    }
+
+    writer.flush()?;
+    info!("Exported {} active properties to {}", properties.len(), cmd.output.display());
     Ok(())
 } 

@@ -150,6 +150,53 @@ impl FromStr for PropertyType {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq, Hash)]
+pub enum PropertyStatus {
+    Active,
+    Sold,
+    Removed,
+}
+
+impl sqlx::Type<sqlx::Sqlite> for PropertyStatus {
+    fn type_info() -> sqlx::sqlite::SqliteTypeInfo {
+        <String as sqlx::Type<sqlx::Sqlite>>::type_info()
+    }
+}
+
+impl<'r> sqlx::Decode<'r, sqlx::Sqlite> for PropertyStatus {
+    fn decode(value: sqlx::sqlite::SqliteValueRef<'r>) -> std::result::Result<Self, Box<dyn std::error::Error + Send + Sync>> {
+        let text = <&str as sqlx::Decode<sqlx::Sqlite>>::decode(value)?;
+        match text.to_lowercase().as_str() {
+            "active" => Ok(PropertyStatus::Active),
+            "sold" => Ok(PropertyStatus::Sold),
+            "removed" => Ok(PropertyStatus::Removed),
+            _ => Err(format!("Unknown property status: {}", text).into()),
+        }
+    }
+}
+
+impl sqlx::Encode<'_, sqlx::Sqlite> for PropertyStatus {
+    fn encode_by_ref(&self, args: &mut Vec<sqlx::sqlite::SqliteArgumentValue<'_>>) -> sqlx::encode::IsNull {
+        let text = match self {
+            PropertyStatus::Active => "active",
+            PropertyStatus::Sold => "sold",
+            PropertyStatus::Removed => "removed",
+        };
+        args.push(sqlx::sqlite::SqliteArgumentValue::Text(text.into()));
+        sqlx::encode::IsNull::No
+    }
+}
+
+impl std::fmt::Display for PropertyStatus {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            PropertyStatus::Active => write!(f, "Active"),
+            PropertyStatus::Sold => write!(f, "Sold"),
+            PropertyStatus::Removed => write!(f, "Removed"),
+        }
+    }
+}
+
 // Property with SQLx support
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Property {
@@ -166,6 +213,7 @@ pub struct Property {
     pub rooms: Option<i32>,
     pub antiquity: Option<i32>,
     pub url: Url,
+    pub status: PropertyStatus,
     pub created_at: DateTime<Utc>,
     pub updated_at: DateTime<Utc>,
 }
@@ -190,6 +238,7 @@ impl<'r> FromRow<'r, sqlx::sqlite::SqliteRow> for Property {
             rooms: row.try_get("rooms")?,
             antiquity: row.try_get("antiquity")?,
             url,
+            status: row.try_get("status")?,
             created_at: row.try_get("created_at")?,
             updated_at: row.try_get("updated_at")?,
         })
@@ -305,6 +354,7 @@ mod tests {
             rooms: Some(3),
             antiquity: Some(5),
             url: Url::from_str("https://example.com/property/123").unwrap(),
+            status: PropertyStatus::Active,
             created_at: Utc.with_ymd_and_hms(2024, 3, 21, 0, 0, 0).unwrap(),
             updated_at: Utc.with_ymd_and_hms(2024, 3, 21, 0, 0, 0).unwrap(),
         };

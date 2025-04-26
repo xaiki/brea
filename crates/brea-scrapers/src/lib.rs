@@ -1,8 +1,9 @@
 pub mod argenprop;
 
-use brea_core::{Property, PropertyImage, PropertyType, Result};
+use brea_core::{Database, Property, PropertyImage, PropertyType, Result};
 use std::sync::Arc;
 use async_trait::async_trait;
+use chrono::Utc;
 
 pub use argenprop::ArgenPropScraper;
 
@@ -23,6 +24,8 @@ pub struct ScrapeQuery {
     pub min_size: Option<f64>,
     pub max_size: Option<f64>,
     pub page: u32,
+    #[allow(dead_code)]
+    pub db: Option<Arc<Database>>,
 }
 
 impl ScrapeQuery {
@@ -33,6 +36,7 @@ impl ScrapeQuery {
         max_price: Option<f64>,
         min_size: Option<f64>,
         max_size: Option<f64>,
+        db: Option<Arc<Database>>,
     ) -> Self {
         Self {
             district,
@@ -42,7 +46,13 @@ impl ScrapeQuery {
             min_size,
             max_size,
             page: 1,
+            db,
         }
+    }
+
+    pub fn with_page(mut self, page: u32) -> Self {
+        self.page = page;
+        self
     }
 
     pub fn next_page(&mut self) {
@@ -106,6 +116,7 @@ pub trait Scraper: Send + Sync + PropertyTypeTranslator {
                 max_price,
                 min_size,
                 max_size,
+                None,
             );
 
             let properties = self.scrape_listing(query, max_pages).await?;
@@ -150,6 +161,7 @@ mod tests {
             Some(200_000.0),
             Some(50.0),
             Some(100.0),
+            None,
         );
 
         assert_eq!(query.district, "test");
@@ -166,6 +178,7 @@ mod tests {
         let mut query = ScrapeQuery::new(
             "test".to_string(),
             PropertyType::House,
+            None,
             None,
             None,
             None,

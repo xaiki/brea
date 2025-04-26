@@ -1,6 +1,7 @@
 use brea_core::{Database, PropertyType};
 use brea_scrapers::{ArgenPropScraper, Scraper};
 use tempfile::tempdir;
+use std::sync::Arc;
 
 #[tokio::test]
 async fn test_single_property_scraping() {
@@ -12,18 +13,17 @@ async fn test_single_property_scraping() {
     let scraper = ArgenPropScraper::new();
 
     // Scrape a single property
+    let query = brea_scrapers::ScrapeQuery::new(
+        "belgrano".to_string(),
+        PropertyType::Apartment,
+        None,
+        None,
+        None,
+        None,
+        None,
+    );
     let properties = scraper
-        .scrape_listing(
-            brea_scrapers::ScrapeQuery::new(
-                "belgrano".to_string(),
-                PropertyType::Apartment,
-                None,
-                None,
-                None,
-                None,
-            ),
-            1,
-        )
+        .scrape_listing(query, 1)
         .await
         .unwrap();
 
@@ -52,18 +52,17 @@ async fn test_multiple_properties_scraping() {
     // Scrape multiple pages of properties
     let mut all_properties = Vec::new();
     for _ in 1..=3 {
+        let query = brea_scrapers::ScrapeQuery::new(
+            "belgrano".to_string(),
+            PropertyType::Apartment,
+            None,
+            None,
+            None,
+            None,
+            None,
+        );
         let properties = scraper
-            .scrape_listing(
-                brea_scrapers::ScrapeQuery::new(
-                    "belgrano".to_string(),
-                    PropertyType::Apartment,
-                    None,
-                    None,
-                    None,
-                    None,
-                ),
-                1,
-            )
+            .scrape_listing(query, 1)
             .await
             .unwrap();
         all_properties.extend(properties);
@@ -92,18 +91,17 @@ async fn test_property_update_detection() {
     let scraper = ArgenPropScraper::new();
 
     // Scrape initial properties
+    let query = brea_scrapers::ScrapeQuery::new(
+        "belgrano".to_string(),
+        PropertyType::Apartment,
+        None,
+        None,
+        None,
+        None,
+        None,
+    );
     let initial_properties = scraper
-        .scrape_listing(
-            brea_scrapers::ScrapeQuery::new(
-                "belgrano".to_string(),
-                PropertyType::Apartment,
-                None,
-                None,
-                None,
-                None,
-            ),
-            1,
-        )
+        .scrape_listing(query, 1)
         .await
         .unwrap();
 
@@ -116,18 +114,17 @@ async fn test_property_update_detection() {
     tokio::time::sleep(tokio::time::Duration::from_secs(2)).await;
 
     // Scrape again to detect updates
+    let query = brea_scrapers::ScrapeQuery::new(
+        "belgrano".to_string(),
+        PropertyType::Apartment,
+        None,
+        None,
+        None,
+        None,
+        None,
+    );
     let updated_properties = scraper
-        .scrape_listing(
-            brea_scrapers::ScrapeQuery::new(
-                "belgrano".to_string(),
-                PropertyType::Apartment,
-                None,
-                None,
-                None,
-                None,
-            ),
-            1,
-        )
+        .scrape_listing(query, 1)
         .await
         .unwrap();
 
@@ -145,6 +142,90 @@ async fn test_property_update_detection() {
         let price_history = db.get_price_history(property.id.unwrap()).await.unwrap();
         assert!(!price_history.is_empty());
     }
+}
+
+#[tokio::test]
+async fn test_scraping() -> Result<(), Box<dyn std::error::Error>> {
+    let scraper = brea_scrapers::ScraperFactory::create_scraper(brea_scrapers::ScraperType::Argenprop);
+    
+    let query = brea_scrapers::ScrapeQuery::new(
+        "belgrano".to_string(),
+        PropertyType::Apartment,
+        None,
+        None,
+        None,
+        None,
+        None,
+    );
+    
+    let properties = scraper.scrape_listing(query, 1).await?;
+    assert!(!properties.is_empty());
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_scraping_with_filters() -> Result<(), Box<dyn std::error::Error>> {
+    let scraper = brea_scrapers::ScraperFactory::create_scraper(brea_scrapers::ScraperType::Argenprop);
+    
+    let query = brea_scrapers::ScrapeQuery::new(
+        "belgrano".to_string(),
+        PropertyType::Apartment,
+        Some(100_000.0),
+        Some(200_000.0),
+        Some(50.0),
+        Some(100.0),
+        None,
+    );
+    
+    let properties = scraper.scrape_listing(query, 1).await?;
+    assert!(!properties.is_empty());
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_scraping_with_database() -> Result<(), Box<dyn std::error::Error>> {
+    let temp_dir = tempdir()?;
+    let db_path = temp_dir.path().join("test.db");
+    let db = Database::new(&db_path).await?;
+    let db = Arc::new(db);
+    let scraper = brea_scrapers::ScraperFactory::create_scraper(brea_scrapers::ScraperType::Argenprop);
+    
+    let query = brea_scrapers::ScrapeQuery::new(
+        "belgrano".to_string(),
+        PropertyType::Apartment,
+        None,
+        None,
+        None,
+        None,
+        Some(Arc::clone(&db)),
+    );
+    
+    let properties = scraper.scrape_listing(query, 1).await?;
+    assert!(!properties.is_empty());
+    Ok(())
+}
+
+#[tokio::test]
+async fn test_scraping_with_database_and_filters() -> Result<(), Box<dyn std::error::Error>> {
+    let temp_dir = tempdir()?;
+    let db_path = temp_dir.path().join("test.db");
+    let db = Database::new(&db_path).await?;
+    let db = Arc::new(db);
+    let scraper = brea_scrapers::ScraperFactory::create_scraper(brea_scrapers::ScraperType::Argenprop);
+    
+    let query = brea_scrapers::ScrapeQuery::new(
+        "belgrano".to_string(),
+        PropertyType::Apartment,
+        Some(100_000.0),
+        Some(200_000.0),
+        Some(50.0),
+        Some(100.0),
+        Some(Arc::clone(&db)),
+    );
+    
+    let properties = scraper.scrape_listing(query, 1).await?;
+    assert!(!properties.is_empty());
+    Ok(())
 }
 
 fn main() {

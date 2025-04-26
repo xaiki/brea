@@ -37,7 +37,7 @@ async fn test_single_property_scraping() {
     }
 
     // Verify that the properties were saved
-    let saved_properties = db.list_properties(None, None, None, None).unwrap();
+    let saved_properties = db.list_properties(None, None, None, None, None, None, None, None, false).unwrap();
     assert!(!saved_properties.is_empty());
 }
 
@@ -79,7 +79,7 @@ async fn test_multiple_properties_scraping() {
     }
 
     // Verify that all properties were saved
-    let saved_properties = db.list_properties(None, None, None, None).unwrap();
+    let saved_properties = db.list_properties(None, None, None, None, None, None, None, None, false).unwrap();
     assert!(saved_properties.len() > 1);
 }
 
@@ -138,7 +138,7 @@ async fn test_property_update_detection() {
     }
 
     // Verify that we can detect updates
-    let saved_properties = db.list_properties(None, None, None, None).unwrap();
+    let saved_properties = db.list_properties(None, None, None, None, None, None, None, None, false).unwrap();
     assert!(!saved_properties.is_empty());
 
     // Check that we have price history entries

@@ -71,7 +71,15 @@ fn bench_database_operations(c: &mut Criterion) {
                     db.save_property(&mut property).await.unwrap();
                 }
                 black_box(db.list_properties(
-                    None, None, None, None, None, None, None, None, false
+                    Some("benchmark"),
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    None,
+                    false
                 ).await.unwrap());
             });
         });
@@ -98,6 +106,7 @@ fn bench_scraper_operations(c: &mut Criterion) {
             max_price: None,
             min_size: None,
             max_size: None,
+            db: None,
         };
         b.to_async(&rt).iter(|| async {
             black_box(scraper.scrape_page(&query).await.unwrap());
@@ -116,6 +125,7 @@ fn bench_scraper_operations(c: &mut Criterion) {
             max_price: None,
             min_size: None,
             max_size: None,
+            db: None,
         };
         b.to_async(&rt).iter(|| async {
             black_box(scraper.scrape_page(&query).await.unwrap());
@@ -164,7 +174,15 @@ fn bench_concurrent_operations(c: &mut Criterion) {
                 }
                 let futures: Vec<_> = (0..size)
                     .map(|_| db.list_properties(
-                        None, None, None, None, None, None, None, None, false
+                        Some("benchmark"),
+                        None,
+                        None,
+                        None,
+                        None,
+                        None,
+                        None,
+                        None,
+                        false
                     ))
                     .collect();
                 black_box(futures::future::join_all(futures).await);

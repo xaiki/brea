@@ -1,5 +1,5 @@
 use async_trait::async_trait;
-use brea_core::{BreaError, Property, PropertyImage, PropertyType, Result};
+use brea_core::{BreaError, Property, PropertyImage, PropertyType, PropertyStatus, Result, Database};
 use crate::{PropertyTypeTranslator, Scraper, ScrapeQuery};
 use chrono::Utc;
 use reqwest::Client;
@@ -7,16 +7,23 @@ use scraper::{Html, Selector};
 use url::Url;
 use std::path::PathBuf;
 use tracing::{debug, info};
+use std::sync::Mutex;
 
 #[derive(Debug)]
 pub struct ArgenPropScraper {
     client: Client,
+    html_parser: Mutex<()>,
 }
+
+// Make ArgenPropScraper thread-safe
+unsafe impl Send for ArgenPropScraper {}
+unsafe impl Sync for ArgenPropScraper {}
 
 impl ArgenPropScraper {
     pub fn new() -> Self {
         Self {
             client: Client::new(),
+            html_parser: Mutex::new(()),
         }
     }
 
@@ -108,6 +115,7 @@ impl ArgenPropScraper {
             return Err(BreaError::Scraping("Empty HTML provided".to_string()));
         }
 
+        let _guard = self.html_parser.lock().unwrap();
         let document = Html::parse_document(html);
         
         // Check if there's a disabled next page button
@@ -234,7 +242,6 @@ impl Scraper for ArgenPropScraper {
 
         info!("Scraping page: {}", url);
         let html = self.fetch_page(&url).await?;
-        let document = Html::parse_document(&html);
         
         // Extract property type from URL
         let property_type = query.property_type.clone();
@@ -244,101 +251,121 @@ impl Scraper for ArgenPropScraper {
             title_selector,
             price_selector,
             address_selector,
-            _features_selector,  // Rename to indicate it's intentionally unused
+            _features_selector,
             description_selector,
             images_selector,
             _next_page_selector,
         ) = Self::create_selectors()?;
 
-        let mut property_data = Vec::new();
-        let now = Utc::now();
+        let mut properties = Vec::new();
+        let mut external_ids = Vec::new();
 
-        for item in document.select(&listing_item_selector) {
-            let title = item.select(&title_selector)
-                .next()
-                .map(|el| el.text().collect::<String>())
-                .map(|text| text.trim().to_string())
-                .unwrap_or_default();
+        // Parse HTML and extract properties
+        {
+            let _guard = self.html_parser.lock().unwrap();
+            let document = Html::parse_document(&html);
+            
+            for element in document.select(&listing_item_selector) {
+                // Extract external ID from the listing URL
+                let external_id = element
+                    .select(&Self::parse_selector("a")?)
+                    .next()
+                    .and_then(|a| a.value().attr("href"))
+                    .and_then(|href| href.split('/').last())
+                    .unwrap_or_default()
+                    .to_string();
 
-            let property_url = item.select(&Self::parse_selector("a.card")?)
-                .next()
-                .and_then(|el| el.value().attr("href"))
-                .map(|href| {
-                    if href.starts_with("http") {
-                        href.to_string()
-                    } else {
-                        format!("https://www.argenprop.com{}", href)
-                    }
-                })
-                .unwrap_or_default();
+                external_ids.push(external_id.clone());
 
-            // Extract the external_id from the data-item-card attribute
-            let external_id = item.select(&Self::parse_selector("a.card")?)
-                .next()
-                .and_then(|el| el.value().attr("data-item-card"))
-                .unwrap_or_default()
-                .to_string();
+                let title = element.select(&title_selector)
+                    .next()
+                    .map(|el| el.text().collect::<String>())
+                    .map(|text| text.trim().to_string())
+                    .unwrap_or_default();
 
-            let price_usd = item.select(&price_selector)
-                .next()
-                .map(|el| el.text().collect::<String>())
-                .and_then(|price| self.parse_price(&price))
-                .unwrap_or(0.0);
+                let property_url = element.select(&Self::parse_selector("a.card")?)
+                    .next()
+                    .and_then(|el| el.value().attr("href"))
+                    .map(|href| {
+                        if href.starts_with("http") {
+                            href.to_string()
+                        } else {
+                            format!("https://www.argenprop.com{}", href)
+                        }
+                    })
+                    .unwrap_or_default();
 
-            let address = item.select(&address_selector)
-                .next()
-                .map(|el| el.text().collect::<String>())
-                .map(|addr| addr.trim().to_string())
-                .unwrap_or_default();
+                let price_usd = element.select(&price_selector)
+                    .next()
+                    .map(|el| el.text().collect::<String>())
+                    .and_then(|price| self.parse_price(&price))
+                    .unwrap_or(0.0);
 
-            let (covered_size, rooms, antiquity) = self.extract_features(item)?;
+                let address = element.select(&address_selector)
+                    .next()
+                    .map(|el| el.text().collect::<String>())
+                    .map(|addr| addr.trim().to_string())
+                    .unwrap_or_default();
 
-            let description = item.select(&description_selector)
-                .next()
-                .map(|el| el.text().collect::<String>())
-                .map(|desc| desc.trim().to_string());
+                let (covered_size, rooms, antiquity) = self.extract_features(element)?;
 
-            let property = Property {
-                id: None,
-                external_id,
-                source: "argenprop".to_string(),
-                property_type: Some(property_type.clone()),
-                district: query.district.clone(),
-                title,
-                description,
-                price_usd,
-                address,
-                covered_size,
-                rooms,
-                antiquity,
-                url: Url::parse(&property_url).map_err(|e| BreaError::Scraping(e.to_string()))?,
-                created_at: now,
-                updated_at: now,
-            };
+                let description = element.select(&description_selector)
+                    .next()
+                    .map(|el| el.text().collect::<String>())
+                    .map(|desc| desc.trim().to_string());
 
-            // Extract images
-            let mut images = Vec::new();
-            for img in item.select(&images_selector) {
-                if let Some(img_url) = img.value().attr("src").or_else(|| img.value().attr("data-src")) {
-                    if let Ok(url) = Url::parse(img_url) {
-                        let image = PropertyImage {
-                            id: None,
-                            property_id: 0, // This will be set after property is inserted
-                            url,
-                            local_path: PathBuf::new(), // This will be set when downloading
-                            hash: Vec::new(), // This will be set when downloading
-                            created_at: now,
-                        };
-                        images.push(image);
+                let property = Property {
+                    id: None,
+                    external_id,
+                    source: "argenprop".to_string(),
+                    property_type: Some(property_type.clone()),
+                    district: query.district.clone(),
+                    title,
+                    description,
+                    price_usd,
+                    address,
+                    covered_size,
+                    rooms,
+                    antiquity,
+                    url: Url::parse(&property_url).map_err(|e| BreaError::Scraping(e.to_string()))?,
+                    status: PropertyStatus::Active,
+                    created_at: Utc::now(),
+                    updated_at: Utc::now(),
+                };
+
+                // Extract images
+                let mut images = Vec::new();
+                for img in element.select(&images_selector) {
+                    if let Some(img_url) = img.value().attr("src").or_else(|| img.value().attr("data-src")) {
+                        if let Ok(url) = Url::parse(img_url) {
+                            let image = PropertyImage {
+                                id: None,
+                                property_id: 0,
+                                url,
+                                local_path: PathBuf::new(),
+                                hash: Vec::new(),
+                                created_at: Utc::now(),
+                            };
+                            images.push(image);
+                        }
                     }
                 }
-            }
 
-            property_data.push((property, images));
+                properties.push((property, images));
+            }
+        }
+
+        // Check for sold properties
+        if let Some(db) = &query.db {
+            let sold_properties = db.detect_sold_properties("argenprop", &external_ids).await?;
+            for property in sold_properties {
+                info!("Property {} marked as sold", property.external_id);
+                db.mark_property_sold(property.id.unwrap()).await?;
+            }
         }
 
         let has_next = self.has_next_page(&html)?;
-        Ok((property_data, has_next))
+        Ok((properties, has_next))
     }
 }
 
@@ -360,6 +387,7 @@ mod tests {
             min_size: None,
             max_size: None,
             page: 1,
+            db: None,
         };
         
         let (properties, _) = scraper.scrape_page(&query).await.unwrap();
@@ -374,6 +402,7 @@ mod tests {
             min_size: None,
             max_size: None,
             page: 1,
+            db: None,
         };
         
         let (properties, _) = scraper.scrape_page(&query).await.unwrap();
@@ -388,6 +417,7 @@ mod tests {
             min_size: Some(50.0),
             max_size: Some(100.0),
             page: 1,
+            db: None,
         };
         
         let (properties, _) = scraper.scrape_page(&query).await.unwrap();
@@ -407,6 +437,7 @@ mod tests {
             min_size: None,
             max_size: None,
             page: 1,
+            db: None,
         };
         
         let (properties, _) = scraper.scrape_page(&query).await.unwrap();
@@ -435,6 +466,7 @@ mod tests {
             min_size: None,
             max_size: None,
             page: 1,
+            db: None,
         };
         
         let (_, has_next) = scraper.scrape_page(&query).await.unwrap();
@@ -449,6 +481,7 @@ mod tests {
             min_size: None,
             max_size: None,
             page: 100,
+            db: None,
         };
         
         let (_, has_next) = scraper.scrape_page(&query).await.unwrap();
@@ -468,6 +501,7 @@ mod tests {
             min_size: None,
             max_size: None,
             page: 1,
+            db: None,
         };
         
         // Override the client to use a non-existent domain
