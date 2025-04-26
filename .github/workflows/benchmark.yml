@@ -39,7 +39,7 @@ jobs:
           # Run benchmarks and capture the output
           cargo bench --bench performance -- --output-format criterion > output.txt
           # Extract benchmark results and convert to the expected format
-          grep "time:" output.txt | awk '{print $1 " " $4}' > benchmark.txt
+          grep "time:" output.txt | sed -E 's/^([^[:space:]]+)[[:space:]]+time:[[:space:]]+\[[^[:space:]]+ ([^[:space:]]+) [^[:space:]]+\].*/\1 \2/' > benchmark.txt
 
       - name: Store benchmark result
         uses: benchmark-action/github-action-benchmark@v1
