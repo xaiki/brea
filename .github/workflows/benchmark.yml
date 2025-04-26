@@ -32,14 +32,9 @@ jobs:
       - name: Install SQLite
         run: sudo apt-get update && sudo apt-get install -y sqlite3 libsqlite3-dev
 
-      - name: Run benchmarks
+      - name: Run benchmark
         run: |
-          # Build benchmarks first
-          cargo bench --no-run
-          # Run benchmarks and capture the output
-          cargo bench --bench performance -- --output-format criterion > output.txt
-          # Extract benchmark results and convert to the expected format
-          awk '/time:/ { if ($1 != "") name=$1; print name " " $4 }' output.txt | sed 's/\[//;s/,//' > benchmark.txt
+          cargo bench --bench performance -- --output-format bencher | tee benchmark.txt
 
       - name: Store benchmark result
         uses: benchmark-action/github-action-benchmark@v1

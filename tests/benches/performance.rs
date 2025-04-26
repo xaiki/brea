@@ -48,7 +48,6 @@ fn bench_database_operations(c: &mut Criterion) {
     let mut group = c.benchmark_group("database");
     group.sample_size(10);
     group.measurement_time(Duration::from_secs(10));
-    group.json_output(true);
 
     // Benchmark property insertion
     for size in [10, 100, 1000].iter() {
@@ -96,7 +95,6 @@ fn bench_scraper_operations(c: &mut Criterion) {
     let mut group = c.benchmark_group("scraper");
     group.sample_size(10);
     group.measurement_time(Duration::from_secs(30));
-    group.json_output(true);
 
     // Benchmark scraping operations
     group.bench_function("scrape_query", |b| {
@@ -144,7 +142,6 @@ fn bench_concurrent_operations(c: &mut Criterion) {
     let mut group = c.benchmark_group("concurrent");
     group.sample_size(10);
     group.measurement_time(Duration::from_secs(20));
-    group.json_output(true);
 
     // Benchmark concurrent property insertions
     for size in [10, 100].iter() {
