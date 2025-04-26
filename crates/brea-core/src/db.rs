@@ -132,6 +132,82 @@ const MIGRATIONS: &[Migration] = &[
         ALTER TABLE properties DROP COLUMN status;
         "#,
     },
+    Migration {
+        version: 6,
+        up: r#"
+        -- Disable foreign key constraints
+        PRAGMA foreign_keys = OFF;
+
+        -- Drop foreign key constraints
+        DROP TABLE IF EXISTS property_images;
+        DROP TABLE IF EXISTS property_price_history;
+
+        -- Create a temporary table with the new schema (covered_size as nullable)
+        CREATE TABLE properties_new (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            external_id TEXT NOT NULL,
+            source TEXT NOT NULL,
+            property_type TEXT,
+            district TEXT NOT NULL,
+            title TEXT NOT NULL,
+            description TEXT,
+            price_usd REAL NOT NULL,
+            address TEXT NOT NULL,
+            covered_size REAL,
+            rooms INTEGER,
+            antiquity INTEGER,
+            url TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'active',
+            created_at DATETIME NOT NULL,
+            updated_at DATETIME NOT NULL,
+            UNIQUE(source, external_id)
+        );
+
+        -- Copy data from the old table to the new one
+        INSERT INTO properties_new 
+        SELECT * FROM properties;
+
+        -- Drop the old table
+        DROP TABLE properties;
+
+        -- Rename the new table to the original name
+        ALTER TABLE properties_new RENAME TO properties;
+
+        -- Recreate the status index
+        CREATE INDEX idx_properties_status ON properties(status);
+
+        -- Recreate property_images table with foreign key
+        CREATE TABLE property_images (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            property_id INTEGER NOT NULL,
+            url TEXT NOT NULL,
+            local_path TEXT NOT NULL,
+            hash BLOB NOT NULL,
+            created_at DATETIME NOT NULL,
+            updated_at DATETIME NOT NULL,
+            FOREIGN KEY(property_id) REFERENCES properties(id),
+            UNIQUE(property_id, url)
+        );
+
+        -- Recreate property_price_history table with foreign key
+        CREATE TABLE property_price_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            property_id INTEGER NOT NULL,
+            price_usd REAL NOT NULL,
+            observed_at DATETIME NOT NULL,
+            FOREIGN KEY(property_id) REFERENCES properties(id),
+            UNIQUE(property_id, observed_at)
+        );
+
+        -- Re-enable foreign key constraints
+        PRAGMA foreign_keys = ON;
+        "#,
+        down: r#"
+        -- Since this migration makes a constraint less restrictive,
+        -- rolling back could potentially lose data where covered_size is NULL.
+        -- For safety, we'll keep the nullable column in the down migration.
+        "#,
+    },
 ];
 
 #[derive(Debug)]
@@ -400,6 +476,11 @@ impl Database {
         let now = Utc::now();
         property.updated_at = now;
 
+        debug!(
+            "Saving property: external_id={}, source={}, covered_size={:?}, rooms={:?}, antiquity={:?}",
+            property.external_id, property.source, property.covered_size, property.rooms, property.antiquity
+        );
+
         // Check if property already exists
         let existing = sqlx::query(
             "SELECT id FROM properties WHERE source = ? AND external_id = ?"
@@ -413,6 +494,8 @@ impl Database {
             // Property exists, update it
             let id = row.get::<i64, _>(0);
             property.id = Some(id);
+            
+            debug!("Updating existing property with id={}", id);
             
             sqlx::query(
                 r#"
@@ -452,6 +535,8 @@ impl Database {
             property.created_at = now;
             property.status = PropertyStatus::Active;
             
+            debug!("Inserting new property");
+            
             let result = sqlx::query(
                 r#"
                 INSERT INTO properties (
@@ -480,6 +565,7 @@ impl Database {
             .await?;
 
             property.id = Some(result.last_insert_rowid());
+            debug!("Inserted new property with id={}", property.id.unwrap());
         }
 
         // Record price history

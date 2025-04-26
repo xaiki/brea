@@ -92,20 +92,30 @@ impl ArgenPropScraper {
 
         for feature in element.select(&feature_selector) {
             let text = feature.text().collect::<String>().trim().to_string();
+            debug!("Processing feature text: {}", text);
+            
             if text.contains("m²") {
                 if let Ok(size) = text.replace("m²", "").trim().parse::<f64>() {
                     covered_size = Some(size);
+                    debug!("Extracted covered size: {:?}", covered_size);
                 }
             } else if text.contains("ambientes") {
                 if let Ok(num_rooms) = text.replace("ambientes", "").trim().parse::<i32>() {
                     rooms = Some(num_rooms);
+                    debug!("Extracted rooms: {:?}", rooms);
                 }
             } else if text.contains("años") {
                 if let Ok(age) = text.replace("años", "").trim().parse::<i32>() {
                     antiquity = Some(age);
+                    debug!("Extracted antiquity: {:?}", antiquity);
                 }
             }
         }
+
+        debug!(
+            "Final extracted features - covered_size: {:?}, rooms: {:?}, antiquity: {:?}",
+            covered_size, rooms, antiquity
+        );
 
         Ok((covered_size, rooms, antiquity))
     }

@@ -1,6 +1,6 @@
 use brea_core::{
     PropertyDisplay, PropertyType, Result,
-    create_property_table, Database, Property, PropertyStatus,
+    create_property_table, Database, PropertyStatus,
 };
 use brea_scrapers::{ScraperType, ScrapeQuery, ScraperFactory};
 use clap::{Parser, Subcommand, ValueEnum};
@@ -221,13 +221,15 @@ async fn scrape_properties(cmd: &ScrapeCommand, db: Arc<Database>) -> Result<()>
         let results = scraper.scrape_listing(query, cmd.max_pages).await?;
         
         // Save properties first
-        for (mut property, _images) in &results {
+        let mut saved_properties = Vec::new();
+        for (mut property, _images) in results {
             db.save_property(&mut property).await?;
+            saved_properties.push(property);
         }
         
         // Display properties in the same format as the list command
         let mut displays = Vec::new();
-        for (property, _images) in &results {
+        for property in &saved_properties {
             let price_history = db.get_price_history(property.id.unwrap()).await?;
             displays.push(PropertyDisplay::new(property.clone(), price_history));
         }
@@ -235,7 +237,7 @@ async fn scrape_properties(cmd: &ScrapeCommand, db: Arc<Database>) -> Result<()>
         let table = create_property_table(&displays, 1); // Use default graph height of 1
         println!("{}", table);
 
-        info!("Found {} properties", results.len());
+        info!("Found {} properties", saved_properties.len());
     }
     Ok(())
 }
@@ -256,11 +258,11 @@ async fn update_properties(cmd: &UpdateCommand, db: Arc<Database>) -> Result<()>
                 Some(Arc::clone(&db)),
             );
 
-            let results = scraper.scrape_listing(query, cmd.max_pages.unwrap_or(1)).await?;
+            let mut results = scraper.scrape_listing(query, cmd.max_pages.unwrap_or(1)).await?;
             
             // Save updated properties first
-            for (mut property, _images) in &results {
-                db.save_property(&mut property).await?;
+            for (ref mut property, _images) in &mut results {
+                db.save_property(property).await?;
             }
             
             // Display updated properties in the same format as the list command
