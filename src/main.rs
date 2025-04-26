@@ -220,6 +220,11 @@ async fn scrape_properties(cmd: &ScrapeCommand, db: Arc<Database>) -> Result<()>
 
         let results = scraper.scrape_listing(query, cmd.max_pages).await?;
         
+        // Save properties first
+        for (mut property, _images) in &results {
+            db.save_property(&mut property).await?;
+        }
+        
         // Display properties in the same format as the list command
         let mut displays = Vec::new();
         for (property, _images) in &results {
@@ -252,6 +257,11 @@ async fn update_properties(cmd: &UpdateCommand, db: Arc<Database>) -> Result<()>
             );
 
             let results = scraper.scrape_listing(query, cmd.max_pages.unwrap_or(1)).await?;
+            
+            // Save updated properties first
+            for (mut property, _images) in &results {
+                db.save_property(&mut property).await?;
+            }
             
             // Display updated properties in the same format as the list command
             let mut displays = Vec::new();
