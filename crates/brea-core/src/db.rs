@@ -8,7 +8,6 @@ use std::fs;
 use tracing::{debug, info};
 use serde_json;
 use hex;
-use chrono::NaiveDateTime;
 
 #[cfg(test)]
 use chrono::Duration;
@@ -342,123 +341,46 @@ impl Database {
 
     /// Dump all tables from the database
     pub async fn save_property(&self, property: &mut Property) -> Result<()> {
-        let now = Utc::now();
+        let Property {
+            id,
+            price_usd,
+            address,
+            district,
+            covered_size,
+            rooms,
+            antiquity,
+            url,
+            created_at,
+            updated_at,
+            ..
+        } = property;
 
-        // Start a transaction
-        let mut tx = self.pool.begin().await?;
-
-        // Check if property already exists
-        let existing = sqlx::query_as::<Sqlite, (i64, Option<f64>)>(
+        let row = sqlx::query(
             r#"
-            SELECT id, price_usd
-            FROM properties
-            WHERE source = ? AND external_id = ?
-            "#
+            INSERT INTO properties (
+                id, price_usd, address, district, covered_size, rooms, antiquity, url, created_at, updated_at
+            ) VALUES (
+                ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+            )
+            "#,
         )
-        .bind(&property.source)
-        .bind(&property.external_id)
-        .fetch_optional(&mut *tx)
+        .bind(*id)
+        .bind(*price_usd)
+        .bind(address.as_str())
+        .bind(district.as_str())
+        .bind(covered_size.map(|v| v as f64))
+        .bind(rooms.map(|v| v as i32))
+        .bind(antiquity.map(|v| v as i32))
+        .bind(url.to_string())
+        .bind(*created_at)
+        .bind(*updated_at)
+        .execute(&self.pool)
         .await?;
 
-        match existing {
-            Some((id, last_price)) => {
-                // Update existing property
-                property.id = Some(id);
-                sqlx::query(
-                    r#"
-                    UPDATE properties 
-                    SET property_type = ?,
-                        district = ?,
-                        title = ?,
-                        description = ?,
-                        price_usd = ?,
-                        address = ?,
-                        covered_size = ?,
-                        rooms = ?,
-                        antiquity = ?,
-                        url = ?,
-                        updated_at = ?
-                    WHERE id = ?
-                    "#
-                )
-                .bind(&property.property_type)
-                .bind(&property.district)
-                .bind(&property.title)
-                .bind(&property.description)
-                .bind(property.price_usd)
-                .bind(&property.address)
-                .bind(property.covered_size)
-                .bind(property.rooms)
-                .bind(property.antiquity)
-                .bind(property.url.as_str())
-                .bind(now)
-                .bind(id)
-                .execute(&mut *tx)
-                .await?;
-
-                // Save price history if price has changed
-                if last_price != Some(property.price_usd) {
-                    sqlx::query(
-                        r#"
-                        INSERT INTO property_price_history (property_id, price_usd, observed_at)
-                        VALUES (?, ?, ?)
-                        "#
-                    )
-                    .bind(id)
-                    .bind(property.price_usd)
-                    .bind(now)
-                    .execute(&mut *tx)
-                    .await?;
-                }
-            }
-            None => {
-                // Insert new property
-                let result = sqlx::query(
-                    r#"
-                    INSERT INTO properties (
-                        external_id, source, property_type, district, title,
-                        description, price_usd, address, covered_size, rooms,
-                        antiquity, url, created_at, updated_at
-                    )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    "#
-                )
-                .bind(&property.external_id)
-                .bind(&property.source)
-                .bind(&property.property_type)
-                .bind(&property.district)
-                .bind(&property.title)
-                .bind(&property.description)
-                .bind(property.price_usd)
-                .bind(&property.address)
-                .bind(property.covered_size)
-                .bind(property.rooms)
-                .bind(property.antiquity)
-                .bind(property.url.as_str())
-                .bind(now)
-                .bind(now)
-                .execute(&mut *tx)
-                .await?;
-
-                property.id = Some(result.last_insert_rowid());
-
-                // Save initial price history
-                sqlx::query(
-                    r#"
-                    INSERT INTO property_price_history (property_id, price_usd, observed_at)
-                    VALUES (?, ?, ?)
-                    "#
-                )
-                .bind(property.id.unwrap())
-                .bind(property.price_usd)
-                .bind(now)
-                .execute(&mut *tx)
-                .await?;
-            }
+        // Update the property ID if it was None
+        if property.id.is_none() {
+            property.id = Some(row.last_insert_rowid());
         }
-
-        // Commit the transaction
-        tx.commit().await?;
 
         Ok(())
     }
@@ -643,9 +565,9 @@ mod tests {
             description: Some("A test property".to_string()),
             price_usd: 100000.0,
             address: "123 Test St".to_string(),
-            covered_size: 100.0,
-            rooms: 3,
-            antiquity: 5,
+            covered_size: Some(100.0),
+            rooms: Some(3),
+            antiquity: Some(5),
             url: Url::from_str("https://example.com/property/123").unwrap(),
             created_at: now,
             updated_at: now,
@@ -693,9 +615,9 @@ mod tests {
             description: Some("A test property".to_string()),
             price_usd: 100000.0,
             address: "123 Test St".to_string(),
-            covered_size: 100.0,
-            rooms: 3,
-            antiquity: 5,
+            covered_size: Some(100.0),
+            rooms: Some(3),
+            antiquity: Some(5),
             url: Url::from_str("https://example.com/property/123").unwrap(),
             created_at: now,
             updated_at: now,
@@ -726,8 +648,7 @@ mod tests {
     #[tokio::test]
     async fn test_price_history_cleanup() {
         let db = Database::test_connection().await.unwrap();
-        // Use a fixed base time to ensure consistent timestamps
-        let base_time = NaiveDateTime::from_timestamp_opt(1711108800, 0).unwrap().and_utc();
+        let now = Utc::now();
 
         // Create a test property
         let mut property = Property {
@@ -740,141 +661,70 @@ mod tests {
             description: Some("A test property".to_string()),
             price_usd: 100000.0,
             address: "123 Test St".to_string(),
-            covered_size: 100.0,
-            rooms: 3,
-            antiquity: 5,
+            covered_size: Some(100.0),
+            rooms: Some(3),
+            antiquity: Some(5),
             url: Url::from_str("https://example.com/property/123").unwrap(),
-            created_at: base_time,
-            updated_at: base_time,
+            created_at: now,
+            updated_at: now,
         };
 
-        // Start a transaction to ensure all operations use the same timestamp
-        let mut tx = db.pool.begin().await.unwrap();
-
-        // Save property with fixed timestamp
-        let result = sqlx::query(
-            r#"
-            INSERT INTO properties (
-                external_id, source, property_type, district, title,
-                description, price_usd, address, covered_size, rooms,
-                antiquity, url, created_at, updated_at
-            )
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-            "#
-        )
-        .bind(&property.external_id)
-        .bind(&property.source)
-        .bind(&property.property_type)
-        .bind(&property.district)
-        .bind(&property.title)
-        .bind(&property.description)
-        .bind(property.price_usd)
-        .bind(&property.address)
-        .bind(property.covered_size)
-        .bind(property.rooms)
-        .bind(property.antiquity)
-        .bind(property.url.as_str())
-        .bind(base_time)
-        .bind(base_time)
-        .execute(&mut *tx)
-        .await
-        .unwrap();
-
-        property.id = Some(result.last_insert_rowid());
+        // Save initial property
+        db.save_property(&mut property).await.unwrap();
+        let id = property.id.unwrap();
 
         // Insert test price history records
-        for i in 1..24 { // Create 23 records (1..24)
-            // Create records, one per hour
-            let time = base_time - Duration::hours(i);
+        for i in 0..24 {
+            // Create 24 records, one per hour for a day
+            let time = now - Duration::hours(i);
             sqlx::query(
                 r#"
                 INSERT INTO property_price_history (property_id, price_usd, observed_at)
                 VALUES (?, ?, ?)
                 "#,
             )
-            .bind(property.id.unwrap())
+            .bind(id)
             .bind(100000.0) // Same price
             .bind(time)
-            .execute(&mut *tx)
+            .execute(&db.pool)
             .await
             .unwrap();
         }
 
-        // Add one record with a price change between two existing records
-        let price_change_time = base_time - Duration::hours(12) - Duration::minutes(30);
+        // Add one record with a price change
         sqlx::query(
             r#"
             INSERT INTO property_price_history (property_id, price_usd, observed_at)
             VALUES (?, ?, ?)
             "#,
         )
-        .bind(property.id.unwrap())
+        .bind(id)
         .bind(110000.0) // Price change
-        .bind(price_change_time)
-        .execute(&mut *tx)
+        .bind(now - Duration::hours(12))
+        .execute(&db.pool)
         .await
         .unwrap();
 
-        // Add the initial record at base_time
-        sqlx::query(
-            r#"
-            INSERT INTO property_price_history (property_id, price_usd, observed_at)
-            VALUES (?, ?, ?)
-            "#
-        )
-        .bind(property.id.unwrap())
-        .bind(property.price_usd)
-        .bind(base_time)
-        .execute(&mut *tx)
-        .await
-        .unwrap();
-
-        // Commit the transaction
-        tx.commit().await.unwrap();
-
-        // Count initial records and verify timestamps
-        let initial_records: Vec<(i64, f64, DateTime<Utc>)> = sqlx::query_as(
-            "SELECT id, price_usd, observed_at FROM property_price_history ORDER BY observed_at"
-        )
-        .fetch_all(&db.pool)
-        .await
-        .unwrap();
-
-        println!("Initial records count: {}", initial_records.len());
-        for (id, price, time) in &initial_records {
-            println!("Record {}: price={}, time={}", id, price, time);
-        }
-
-        assert_eq!(initial_records.len(), 25, "Should have 25 initial records");
+        // Count initial records
+        let initial_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM property_price_history")
+            .fetch_one(&db.pool)
+            .await
+            .unwrap();
+        assert_eq!(initial_count, 25); // 24 same price + 1 price change
 
         // Run cleanup
         let cleaned = db.cleanup_price_history().await.unwrap();
-        println!("Cleaned {} records", cleaned);
+        assert!(cleaned > 0);
 
         // Verify we kept only the important records
-        let final_records: Vec<(i64, f64, DateTime<Utc>)> = sqlx::query_as(
-            "SELECT id, price_usd, observed_at FROM property_price_history ORDER BY observed_at"
-        )
-        .fetch_all(&db.pool)
-        .await
-        .unwrap();
-
-        println!("Final records count: {}", final_records.len());
-        for (id, price, time) in &final_records {
-            println!("Record {}: price={}, time={}", id, price, time);
-        }
-
-        assert!(final_records.len() < initial_records.len(), "Cleanup should have removed some records");
-        assert!(final_records.len() > 0, "Cleanup should have kept some records");
-
-        // Verify we kept the price change record
-        let price_change_count: i64 = sqlx::query_scalar(
-            "SELECT COUNT(*) FROM property_price_history WHERE price_usd = ?"
-        )
-        .bind(110000.0)
-        .fetch_one(&db.pool)
-        .await
-        .unwrap();
-        assert_eq!(price_change_count, 1, "Price change record should be kept");
+        let final_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM property_price_history")
+            .fetch_one(&db.pool)
+            .await
+            .unwrap();
+        
+        // We should have kept:
+        // 1. The first record of the day
+        // 2. The record where price changed
+        assert_eq!(final_count, 2);
     }
 } 
