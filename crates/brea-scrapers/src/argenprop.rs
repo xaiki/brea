@@ -8,6 +8,7 @@ use url::Url;
 use std::path::PathBuf;
 use tracing::{debug, info};
 use std::sync::Mutex;
+use regex;
 
 #[derive(Debug)]
 pub struct ArgenPropScraper {
@@ -84,30 +85,195 @@ impl ArgenPropScraper {
         cleaned.parse::<f64>().ok()
     }
 
+    fn extract_dimensions(&self, text: &str) -> Option<f64> {
+        // Match patterns like "13 x 26", "13x26", "13.5 x 26.5", "13m x 26m"
+        let dim_regex = regex::Regex::new(r"(\d+(?:\.\d+)?)\s*(?:m|mts|metros)?\s*[xX]\s*(\d+(?:\.\d+)?)\s*(?:m|mts|metros)?").ok()?;
+        if let Some(caps) = dim_regex.captures(text) {
+            let width: f64 = caps[1].parse().unwrap_or(0.0);
+            let length: f64 = caps[2].parse().unwrap_or(0.0);
+            if width > 0.0 && length > 0.0 {
+                return Some(width * length);
+            }
+        }
+        None
+    }
+
+    fn extract_size_from_text(&self, text: &str) -> Option<f64> {
+        // First try to find dimensions and calculate area
+        if let Some(area) = self.extract_dimensions(text) {
+            return Some(area);
+        }
+
+        // Clean the text but preserve numbers and units
+        let text = text.to_lowercase()
+            .replace(".", "")
+            .replace(",", ".");
+
+        // Match size patterns with various units
+        let size_patterns = [
+            r"(\d+(?:\.\d+)?)\s*(?:m²|m2|mts²|mts2|metros\s*cuadrados|metros2|mtrs2|mtrs²)",
+            r"(\d+(?:\.\d+)?)\s*(?:m|mts|metros)\s*x\s*(\d+(?:\.\d+)?)",
+            r"superficie(?:\s*total)?\s*(?:de)?\s*(\d+(?:\.\d+)?)",
+            r"(\d+(?:\.\d+)?)\s*(?:m|mts|metros)\s*de\s*superficie",
+            r"(\d+(?:\.\d+)?)\s*(?:m|mts|metros)\s*cubiertos",
+            r"(\d+(?:\.\d+)?)\s*(?:m|mts|metros)\s*totales",
+        ];
+
+        for pattern in size_patterns {
+            let regex = regex::Regex::new(pattern).ok()?;
+            if let Some(caps) = regex.captures(&text) {
+                if caps.len() > 2 {
+                    // Handle "X x Y" format
+                    let width: f64 = caps[1].parse().unwrap_or(0.0);
+                    let length: f64 = caps[2].parse().unwrap_or(0.0);
+                    if width > 0.0 && length > 0.0 {
+                        return Some(width * length);
+                    }
+                } else {
+                    // Handle direct size specification
+                    if let Ok(size) = caps[1].parse::<f64>() {
+                        if size > 0.0 && size < 10000.0 { // Sanity check for reasonable sizes
+                            return Some(size);
+                        }
+                    }
+                }
+            }
+        }
+
+        // Handle ranges like "100-150 m²"
+        let range_regex = regex::Regex::new(r"(\d+(?:\.\d+)?)\s*-\s*(\d+(?:\.\d+)?)\s*(?:m²|m2|mts²|mts2)").ok()?;
+        if let Some(caps) = range_regex.captures(&text) {
+            let min: f64 = caps[1].parse().unwrap_or(0.0);
+            let max: f64 = caps[2].parse().unwrap_or(0.0);
+            if min > 0.0 && max > min {
+                return Some((min + max) / 2.0);
+            }
+        }
+
+        None
+    }
+
+    fn extract_rooms_from_text(&self, text: &str) -> Option<i32> {
+        let text = text.to_lowercase();
+        
+        // Match room patterns with various terms
+        let room_patterns = [
+            r"(\d+)\s*(?:amb(?:ientes)?|dormitorios?|habitaciones?|dorm\.?|hab\.?|cuartos?)",
+            r"monoambiente",
+            r"(\d+)\s*(?:amb\.?|dorm\.?|hab\.?)",
+            r"(\d+)\s*(?:deptos?|departamentos?)",
+        ];
+
+        for pattern in room_patterns {
+            let regex = regex::Regex::new(pattern).ok()?;
+            if pattern.contains("monoambiente") && regex.is_match(&text) {
+                return Some(1);
+            }
+            if let Some(caps) = regex.captures(&text) {
+                if let Ok(rooms) = caps[1].parse::<i32>() {
+                    if rooms > 0 && rooms < 20 { // Sanity check for reasonable room counts
+                        return Some(rooms);
+                    }
+                }
+            }
+        }
+
+        // Handle ranges like "2-3 ambientes"
+        let range_regex = regex::Regex::new(r"(\d+)\s*-\s*(\d+)\s*(?:amb(?:ientes)?|dormitorios?|deptos?)").ok()?;
+        if let Some(caps) = range_regex.captures(&text) {
+            if let Ok(min) = caps[1].parse::<i32>() {
+                if min > 0 && min < 20 {
+                    return Some(min);
+                }
+            }
+        }
+
+        None
+    }
+
     fn extract_features(&self, element: scraper::ElementRef) -> Result<(Option<f64>, Option<i32>, Option<i32>)> {
-        let feature_selector = Self::parse_selector(".card__main-features li")?;
         let mut covered_size = None;
         let mut rooms = None;
         let mut antiquity = None;
 
+        // First try to extract from dedicated feature elements
+        let feature_selector = Self::parse_selector(".card__main-features li, .card__features li")?;
+        
         for feature in element.select(&feature_selector) {
             let text = feature.text().collect::<String>().trim().to_string();
             debug!("Processing feature text: {}", text);
-            
-            if text.contains("m²") {
-                if let Ok(size) = text.replace("m²", "").trim().parse::<f64>() {
-                    covered_size = Some(size);
-                    debug!("Extracted covered size: {:?}", covered_size);
-                }
-            } else if text.contains("ambientes") {
-                if let Ok(num_rooms) = text.replace("ambientes", "").trim().parse::<i32>() {
-                    rooms = Some(num_rooms);
-                    debug!("Extracted rooms: {:?}", rooms);
-                }
-            } else if text.contains("años") {
-                if let Ok(age) = text.replace("años", "").trim().parse::<i32>() {
+
+            // Try to extract from structured elements first
+            if let Some(size) = self.extract_size_from_text(&text) {
+                covered_size = Some(size);
+                debug!("Extracted covered size from feature element: {:?}", covered_size);
+                continue;
+            }
+
+            if let Some(room_count) = self.extract_rooms_from_text(&text) {
+                rooms = Some(room_count);
+                debug!("Extracted rooms from feature element: {:?}", rooms);
+                continue;
+            }
+
+            // Try to extract antiquity
+            if text.contains("años") || text.contains("año") {
+                let age_text = text
+                    .replace("años", "")
+                    .replace("año", "")
+                    .trim()
+                    .to_string();
+                if let Ok(age) = age_text.parse::<i32>() {
                     antiquity = Some(age);
-                    debug!("Extracted antiquity: {:?}", antiquity);
+                    debug!("Extracted antiquity: {:?} from text: {}", antiquity, text);
+                }
+            }
+        }
+
+        // Only if we didn't find size/rooms in features, try title
+        if covered_size.is_none() || rooms.is_none() {
+            if let Some(title) = element.select(&Self::parse_selector(".card__title")?).next() {
+                let title_text = title.text().collect::<String>().trim().to_string();
+                debug!("Processing title text: {}", title_text);
+
+                // Try to extract covered size from title
+                if covered_size.is_none() {
+                    if let Some(size) = self.extract_size_from_text(&title_text) {
+                        covered_size = Some(size);
+                        debug!("Extracted covered size from title: {:?}", covered_size);
+                    }
+                }
+
+                // Try to extract rooms from title
+                if rooms.is_none() {
+                    if let Some(room_count) = self.extract_rooms_from_text(&title_text) {
+                        rooms = Some(room_count);
+                        debug!("Extracted rooms from title: {:?}", rooms);
+                    }
+                }
+            }
+        }
+
+        // Finally, try description as last resort
+        if covered_size.is_none() || rooms.is_none() {
+            if let Some(description) = element.select(&Self::parse_selector(".card__description")?).next() {
+                let desc_text = description.text().collect::<String>().trim().to_string();
+                debug!("Processing description text: {}", desc_text);
+
+                // Try to extract covered size from description
+                if covered_size.is_none() {
+                    if let Some(size) = self.extract_size_from_text(&desc_text) {
+                        covered_size = Some(size);
+                        debug!("Extracted covered size from description: {:?}", covered_size);
+                    }
+                }
+
+                // Try to extract rooms from description
+                if rooms.is_none() {
+                    if let Some(room_count) = self.extract_rooms_from_text(&desc_text) {
+                        rooms = Some(room_count);
+                        debug!("Extracted rooms from description: {:?}", rooms);
+                    }
                 }
             }
         }
