@@ -77,6 +77,29 @@ brea list -g 5
 brea export -o properties.csv
 ```
 
+### Database Management
+
+BREA uses SQLite for data storage and includes a migration system to manage database schema changes. You can use the following commands to manage your database:
+
+```bash
+# List applied migrations
+brea db list
+
+# Apply pending migrations
+brea db migrate
+
+# Rollback to a specific version
+brea db rollback --version 1
+
+# Rollback all migrations
+brea db rollback --all
+```
+
+Options:
+- `--action <ACTION>`: Action to perform (list, migrate, rollback)
+- `--version <VERSION>`: Target version for rollback
+- `--all`: Rollback all migrations
+
 ## Architecture
 
 BREA is built with a modular architecture:

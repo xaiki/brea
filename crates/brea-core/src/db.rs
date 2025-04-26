@@ -80,8 +80,35 @@ const MIGRATIONS: &[Migration] = &[
         ALTER TABLE properties_new RENAME TO properties;
         "#,
         down: r#"
-        -- This is a destructive migration, we can't restore NULL constraints
-        -- without potentially losing data
+        -- Create a temporary table with the old schema
+        CREATE TABLE properties_old (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            external_id TEXT NOT NULL,
+            source TEXT NOT NULL,
+            property_type TEXT,
+            district TEXT NOT NULL,
+            title TEXT NOT NULL,
+            description TEXT,
+            price_usd REAL NOT NULL,
+            address TEXT NOT NULL,
+            covered_size REAL,
+            rooms INTEGER,
+            antiquity INTEGER,
+            url TEXT NOT NULL,
+            created_at DATETIME NOT NULL,
+            updated_at DATETIME NOT NULL,
+            UNIQUE(source, external_id)
+        );
+
+        -- Copy data from the current table to the old one
+        INSERT INTO properties_old 
+        SELECT * FROM properties;
+
+        -- Drop the current table
+        DROP TABLE properties;
+
+        -- Rename the old table to the original name
+        ALTER TABLE properties_old RENAME TO properties;
         "#,
     },
     Migration {
@@ -125,10 +152,10 @@ const MIGRATIONS: &[Migration] = &[
         CREATE INDEX idx_properties_status ON properties(status);
         "#,
         down: r#"
-        -- Remove status index
+        -- Drop the status index
         DROP INDEX IF EXISTS idx_properties_status;
         
-        -- Remove status column
+        -- Remove the status column
         ALTER TABLE properties DROP COLUMN status;
         "#,
     },
@@ -203,9 +230,267 @@ const MIGRATIONS: &[Migration] = &[
         PRAGMA foreign_keys = ON;
         "#,
         down: r#"
-        -- Since this migration makes a constraint less restrictive,
-        -- rolling back could potentially lose data where covered_size is NULL.
-        -- For safety, we'll keep the nullable column in the down migration.
+        -- Disable foreign key constraints
+        PRAGMA foreign_keys = OFF;
+
+        -- Drop foreign key constraints
+        DROP TABLE IF EXISTS property_images;
+        DROP TABLE IF EXISTS property_price_history;
+
+        -- Create a temporary table with the old schema
+        CREATE TABLE properties_old (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            external_id TEXT NOT NULL,
+            source TEXT NOT NULL,
+            property_type TEXT,
+            district TEXT NOT NULL,
+            title TEXT NOT NULL,
+            description TEXT,
+            price_usd REAL NOT NULL,
+            address TEXT NOT NULL,
+            covered_size REAL,
+            rooms INTEGER,
+            antiquity INTEGER,
+            url TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'active',
+            created_at DATETIME NOT NULL,
+            updated_at DATETIME NOT NULL,
+            UNIQUE(source, external_id)
+        );
+
+        -- Copy data from the current table to the old one
+        INSERT INTO properties_old 
+        SELECT * FROM properties;
+
+        -- Drop the current table
+        DROP TABLE properties;
+
+        -- Rename the old table to the original name
+        ALTER TABLE properties_old RENAME TO properties;
+
+        -- Recreate the status index
+        CREATE INDEX idx_properties_status ON properties(status);
+
+        -- Recreate property_images table with foreign key
+        CREATE TABLE property_images (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            property_id INTEGER NOT NULL,
+            url TEXT NOT NULL,
+            local_path TEXT NOT NULL,
+            hash BLOB NOT NULL,
+            created_at DATETIME NOT NULL,
+            updated_at DATETIME NOT NULL,
+            FOREIGN KEY(property_id) REFERENCES properties(id),
+            UNIQUE(property_id, url)
+        );
+
+        -- Recreate property_price_history table with foreign key
+        CREATE TABLE property_price_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            property_id INTEGER NOT NULL,
+            price_usd REAL NOT NULL,
+            observed_at DATETIME NOT NULL,
+            FOREIGN KEY(property_id) REFERENCES properties(id),
+            UNIQUE(property_id, observed_at)
+        );
+
+        -- Re-enable foreign key constraints
+        PRAGMA foreign_keys = ON;
+        "#,
+    },
+    Migration {
+        version: 7,
+        up: r#"
+        -- Disable foreign key constraints
+        PRAGMA foreign_keys = OFF;
+
+        -- Save property_images and property_price_history data
+        CREATE TABLE property_images_backup AS SELECT * FROM property_images;
+        CREATE TABLE property_price_history_backup AS SELECT * FROM property_price_history;
+
+        -- Drop tables with foreign key constraints
+        DROP TABLE property_images;
+        DROP TABLE property_price_history;
+
+        -- Create a temporary table with the correct schema
+        CREATE TABLE properties_new (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            external_id TEXT NOT NULL,
+            source TEXT NOT NULL,
+            property_type TEXT,
+            district TEXT NOT NULL,
+            title TEXT NOT NULL,
+            description TEXT,
+            price_usd REAL NOT NULL,
+            address TEXT NOT NULL,
+            covered_size REAL,
+            rooms INTEGER,
+            antiquity INTEGER,
+            url TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'active',
+            created_at DATETIME NOT NULL,
+            updated_at DATETIME NOT NULL,
+            UNIQUE(source, external_id)
+        );
+
+        -- Copy data from the old table to the new one, swapping status and updated_at
+        INSERT INTO properties_new 
+        SELECT 
+            id,
+            external_id,
+            source,
+            property_type,
+            district,
+            title,
+            description,
+            price_usd,
+            address,
+            covered_size,
+            rooms,
+            antiquity,
+            url,
+            updated_at as status,  -- Swap these columns
+            created_at,
+            created_at as updated_at   -- Use created_at as updated_at
+        FROM properties;
+
+        -- Drop the old table
+        DROP TABLE properties;
+
+        -- Rename the new table to the original name
+        ALTER TABLE properties_new RENAME TO properties;
+
+        -- Recreate the status index
+        CREATE INDEX idx_properties_status ON properties(status);
+
+        -- Recreate tables with foreign key constraints
+        CREATE TABLE property_images (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            property_id INTEGER NOT NULL,
+            url TEXT NOT NULL,
+            local_path TEXT NOT NULL,
+            hash BLOB NOT NULL,
+            created_at DATETIME NOT NULL,
+            updated_at DATETIME NOT NULL,
+            FOREIGN KEY(property_id) REFERENCES properties(id),
+            UNIQUE(property_id, url)
+        );
+
+        CREATE TABLE property_price_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            property_id INTEGER NOT NULL,
+            price_usd REAL NOT NULL,
+            observed_at DATETIME NOT NULL,
+            FOREIGN KEY(property_id) REFERENCES properties(id),
+            UNIQUE(property_id, observed_at)
+        );
+
+        -- Restore data
+        INSERT INTO property_images SELECT * FROM property_images_backup;
+        INSERT INTO property_price_history SELECT * FROM property_price_history_backup;
+
+        -- Drop backup tables
+        DROP TABLE property_images_backup;
+        DROP TABLE property_price_history_backup;
+
+        -- Re-enable foreign key constraints
+        PRAGMA foreign_keys = ON;
+        "#,
+        down: r#"
+        -- Disable foreign key constraints
+        PRAGMA foreign_keys = OFF;
+
+        -- Save property_images and property_price_history data
+        CREATE TABLE property_images_backup AS SELECT * FROM property_images;
+        CREATE TABLE property_price_history_backup AS SELECT * FROM property_price_history;
+
+        -- Drop tables with foreign key constraints
+        DROP TABLE property_images;
+        DROP TABLE property_price_history;
+
+        -- Create a temporary table with the old schema
+        CREATE TABLE properties_old (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            external_id TEXT NOT NULL,
+            source TEXT NOT NULL,
+            property_type TEXT,
+            district TEXT NOT NULL,
+            title TEXT NOT NULL,
+            description TEXT,
+            price_usd REAL NOT NULL,
+            address TEXT NOT NULL,
+            covered_size REAL,
+            rooms INTEGER,
+            antiquity INTEGER,
+            url TEXT NOT NULL,
+            status TEXT NOT NULL DEFAULT 'active',
+            created_at DATETIME NOT NULL,
+            updated_at DATETIME NOT NULL,
+            UNIQUE(source, external_id)
+        );
+
+        -- Copy data from the current table to the old one, swapping back status and updated_at
+        INSERT INTO properties_old 
+        SELECT 
+            id,
+            external_id,
+            source,
+            property_type,
+            district,
+            title,
+            description,
+            price_usd,
+            address,
+            covered_size,
+            rooms,
+            antiquity,
+            url,
+            status as updated_at,  -- Swap back these columns
+            created_at,
+            status as updated_at   -- Use status as updated_at
+        FROM properties;
+
+        -- Drop the current table
+        DROP TABLE properties;
+
+        -- Rename the old table to the original name
+        ALTER TABLE properties_old RENAME TO properties;
+
+        -- Recreate the status index
+        CREATE INDEX idx_properties_status ON properties(status);
+
+        -- Recreate tables with foreign key constraints
+        CREATE TABLE property_images (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            property_id INTEGER NOT NULL,
+            url TEXT NOT NULL,
+            local_path TEXT NOT NULL,
+            hash BLOB NOT NULL,
+            created_at DATETIME NOT NULL,
+            updated_at DATETIME NOT NULL,
+            FOREIGN KEY(property_id) REFERENCES properties(id),
+            UNIQUE(property_id, url)
+        );
+
+        CREATE TABLE property_price_history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            property_id INTEGER NOT NULL,
+            price_usd REAL NOT NULL,
+            observed_at DATETIME NOT NULL,
+            FOREIGN KEY(property_id) REFERENCES properties(id),
+            UNIQUE(property_id, observed_at)
+        );
+
+        -- Restore data
+        INSERT INTO property_images SELECT * FROM property_images_backup;
+        INSERT INTO property_price_history SELECT * FROM property_price_history_backup;
+
+        -- Drop backup tables
+        DROP TABLE property_images_backup;
+        DROP TABLE property_price_history_backup;
+
+        -- Re-enable foreign key constraints
+        PRAGMA foreign_keys = ON;
         "#,
     },
 ];
@@ -239,6 +524,29 @@ impl Database {
         Ok(db)
     }
 
+    pub async fn new_without_migrations(db_path: impl AsRef<Path>) -> Result<Self> {
+        let db_path = db_path.as_ref();
+        
+        // Create parent directory if it doesn't exist
+        if let Some(parent) = db_path.parent() {
+            fs::create_dir_all(parent)?;
+        }
+
+        // Create empty database file if it doesn't exist
+        if !db_path.exists() {
+            fs::write(db_path, "")?;
+        }
+
+        // Convert path to URL format
+        let db_url = format!("sqlite:{}", db_path.to_string_lossy());
+        
+        let pool = SqlitePool::connect(&db_url).await?;
+        let db = Self { pool };
+        db.create_migrations_table().await?;
+
+        Ok(db)
+    }
+
     // For testing purposes only
     #[cfg(test)]
     pub(crate) async fn test_connection() -> Result<Self> {
@@ -259,7 +567,7 @@ impl Database {
         Ok(())
     }
 
-    async fn get_applied_migrations(&self) -> Result<Vec<i32>> {
+    pub async fn get_applied_migrations(&self) -> Result<Vec<i32>> {
         let versions: Vec<i32> = sqlx::query_scalar("SELECT version FROM migrations ORDER BY version")
             .fetch_all(&self.pool)
             .await?;
@@ -562,7 +870,7 @@ impl Database {
             .bind(property.created_at)
             .bind(property.updated_at)
             .execute(&self.pool)
-            .await?;
+        .await?;
 
             property.id = Some(result.last_insert_rowid());
             debug!("Inserted new property with id={}", property.id.unwrap());
@@ -631,9 +939,9 @@ impl Database {
                 rooms,
                 antiquity,
                 url,
-                status,
+                updated_at as status,
                 created_at,
-                updated_at
+                status as updated_at
             FROM properties 
             WHERE 1=1
             "#,
@@ -821,7 +1129,7 @@ mod tests {
     #[tokio::test]
     async fn test_property_crud() {
         let db = Database::test_connection().await.unwrap();
-        
+
         // Create a property
         let mut property = Property {
             id: None,
@@ -870,7 +1178,7 @@ mod tests {
     #[tokio::test]
     async fn test_property_image_crud() {
         let db = Database::test_connection().await.unwrap();
-        
+
         // Create a property
         let mut property = Property {
             id: None,
@@ -919,7 +1227,7 @@ mod tests {
     #[tokio::test]
     async fn test_price_history_cleanup() {
         let db = Database::test_connection().await.unwrap();
-        
+
         // Create a property
         let mut property = Property {
             id: None,

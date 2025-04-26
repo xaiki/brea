@@ -157,21 +157,40 @@ pub enum PropertyStatus {
     Removed,
 }
 
-impl sqlx::Type<sqlx::Sqlite> for PropertyStatus {
-    fn type_info() -> sqlx::sqlite::SqliteTypeInfo {
-        <String as sqlx::Type<sqlx::Sqlite>>::type_info()
+impl FromStr for PropertyStatus {
+    type Err = BreaError;
+
+    fn from_str(s: &str) -> std::result::Result<Self, Self::Err> {
+        match s.to_lowercase().as_str() {
+            "active" => Ok(PropertyStatus::Active),
+            "sold" => Ok(PropertyStatus::Sold),
+            "removed" => Ok(PropertyStatus::Removed),
+            _ => {
+                // Check if it's a timestamp
+                if chrono::DateTime::parse_from_rfc3339(s).is_ok() {
+                    // If it's a timestamp, default to Active
+                    Ok(PropertyStatus::Active)
+                } else {
+                    Err(BreaError::Database(sqlx::Error::ColumnDecode {
+                        index: "status".into(),
+                        source: format!("Unknown property status: {}", s).into(),
+                    }))
+                }
+            }
+        }
     }
 }
 
 impl<'r> sqlx::Decode<'r, sqlx::Sqlite> for PropertyStatus {
     fn decode(value: sqlx::sqlite::SqliteValueRef<'r>) -> std::result::Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         let text = <&str as sqlx::Decode<sqlx::Sqlite>>::decode(value)?;
-        match text.to_lowercase().as_str() {
-            "active" => Ok(PropertyStatus::Active),
-            "sold" => Ok(PropertyStatus::Sold),
-            "removed" => Ok(PropertyStatus::Removed),
-            _ => Err(format!("Unknown property status: {}", text).into()),
-        }
+        Self::from_str(text).map_err(|e| Box::new(e) as Box<dyn std::error::Error + Send + Sync>)
+    }
+}
+
+impl sqlx::Type<sqlx::Sqlite> for PropertyStatus {
+    fn type_info() -> sqlx::sqlite::SqliteTypeInfo {
+        <String as sqlx::Type<sqlx::Sqlite>>::type_info()
     }
 }
 
@@ -224,6 +243,11 @@ impl<'r> FromRow<'r, sqlx::sqlite::SqliteRow> for Property {
         let url_str: String = row.try_get("url")?;
         let url = Url::from_str(&url_str).map_err(|e| sqlx::Error::Decode(Box::new(e)))?;
 
+        // Get the status column
+        let status_str: String = row.try_get("status")?;
+        let status = PropertyStatus::from_str(&status_str)
+            .map_err(|e| sqlx::Error::Decode(Box::new(e)))?;
+
         Ok(Property {
             id: row.try_get("id")?,
             external_id: row.try_get("external_id")?,
@@ -238,7 +262,7 @@ impl<'r> FromRow<'r, sqlx::sqlite::SqliteRow> for Property {
             rooms: row.try_get("rooms")?,
             antiquity: row.try_get("antiquity")?,
             url,
-            status: row.try_get("status")?,
+            status,
             created_at: row.try_get("created_at")?,
             updated_at: row.try_get("updated_at")?,
         })

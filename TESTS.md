@@ -117,6 +117,20 @@ This test plan covers the testing strategy for the BREA Real Estate Analyzer pro
   - [x] Image download success
   - [x] Image download failure
   - [x] Duplicate image detection
+- [x] Property listing workflow
+  - [x] List with property type filter
+  - [x] List with district filter
+  - [x] List with status filter
+  - [x] List with price range filter
+  - [x] List with size range filter
+- [x] Property update workflow
+  - [x] Update existing properties
+  - [x] Update with max pages limit
+  - [x] Update error handling
+- [x] Property export workflow
+  - [x] Export to CSV with all fields
+  - [x] Export to CSV with status filter
+  - [x] Export error handling
 
 ### 4.2 Performance Tests
 - [ ] Scraping performance

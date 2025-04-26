@@ -38,6 +38,11 @@ enum Commands {
     #[command(about = "Update existing properties with fresh data")]
     #[command(long_about = "Update existing properties by re-scraping their listings. Uses the original property type and location for efficient updates.")]
     Update(UpdateCommand),
+
+    /// Manage database migrations
+    #[command(about = "Manage database migrations")]
+    #[command(long_about = "Apply or rollback database migrations, and view migration status.")]
+    Database(DatabaseCommand),
 }
 
 #[derive(Debug, Clone, Copy, ValueEnum)]
@@ -219,17 +224,17 @@ async fn scrape_properties(cmd: &ScrapeCommand, db: Arc<Database>) -> Result<()>
         );
 
         let results = scraper.scrape_listing(query, cmd.max_pages).await?;
+        let results_len = results.len();
         
         // Save properties first
-        let mut saved_properties = Vec::new();
-        for (mut property, _images) in results {
+        for (property, _images) in &results {
+            let mut property = property.clone();
             db.save_property(&mut property).await?;
-            saved_properties.push(property);
         }
         
         // Display properties in the same format as the list command
         let mut displays = Vec::new();
-        for property in &saved_properties {
+        for (property, _images) in &results {
             let price_history = db.get_price_history(property.id.unwrap()).await?;
             displays.push(PropertyDisplay::new(property.clone(), price_history));
         }
@@ -237,7 +242,7 @@ async fn scrape_properties(cmd: &ScrapeCommand, db: Arc<Database>) -> Result<()>
         let table = create_property_table(&displays, 1); // Use default graph height of 1
         println!("{}", table);
 
-        info!("Found {} properties", saved_properties.len());
+        info!("Found {} properties", results_len);
     }
     Ok(())
 }
@@ -281,11 +286,73 @@ async fn update_properties(cmd: &UpdateCommand, db: Arc<Database>) -> Result<()>
     Ok(())
 }
 
+#[derive(Parser)]
+#[command(about = "Manage database migrations")]
+struct DatabaseCommand {
+    /// Database file path (-d, --database)
+    #[arg(short = 'd', long, default_value = "brea.db")]
+    database: PathBuf,
+
+    /// Migration action to perform (-a, --action)
+    #[arg(short = 'a', long, value_enum)]
+    action: DatabaseAction,
+
+    /// Target migration version for rollback (-t, --target-version)
+    #[arg(short = 't', long = "target-version")]
+    target_version: Option<i32>,
+}
+
+#[derive(Debug, Clone, Copy, ValueEnum)]
+enum DatabaseAction {
+    /// Apply all pending migrations
+    Up,
+    /// Rollback to a specific version
+    Down,
+    /// List applied migrations
+    List,
+}
+
+async fn handle_database_command(cmd: &DatabaseCommand) -> Result<()> {
+    match cmd.action {
+        DatabaseAction::Up => {
+            let db = Database::new(&cmd.database).await?;
+            info!("Applying all pending migrations...");
+            db.migrate().await?;
+            info!("All migrations applied successfully.");
+        }
+        DatabaseAction::Down => {
+            let db = Database::new_without_migrations(&cmd.database).await?;
+            let version = cmd.target_version.ok_or_else(|| {
+                brea_core::BreaError::Database(sqlx::Error::Protocol(
+                    "Target version is required for rollback".into()
+                ))
+            })?;
+            info!("Rolling back to version {}...", version);
+            db.rollback(version).await?;
+            info!("Rollback completed successfully.");
+        }
+        DatabaseAction::List => {
+            let db = Database::new_without_migrations(&cmd.database).await?;
+            let migrations = db.get_applied_migrations().await?;
+            if migrations.is_empty() {
+                info!("No migrations have been applied.");
+            } else {
+                info!("Applied migrations:");
+                for version in migrations {
+                    info!("  - Version {}", version);
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() -> Result<()> {
     // Initialize logging
     tracing_subscriber::fmt()
-        .with_max_level(Level::INFO)
+        .with_env_filter(tracing_subscriber::EnvFilter::from_default_env()
+            .add_directive(Level::INFO.into()))
         .init();
 
     let cli = Cli::parse();
@@ -293,23 +360,24 @@ async fn main() -> Result<()> {
     match &cli.command {
         Commands::Scrape(cmd) => {
             let db = Arc::new(Database::new(&cmd.database).await?);
-            scrape_properties(cmd, db).await?;
+            scrape_properties(cmd, db).await
         }
         Commands::List(cmd) => {
             let db = Database::new(&cmd.database).await?;
-            list_properties(cmd, &db).await?;
+            list_properties(cmd, &db).await
         }
         Commands::Export(cmd) => {
             let db = Database::new(&cmd.database).await?;
-            export_properties(cmd, &db).await?;
+            export_properties(cmd, &db).await
         }
         Commands::Update(cmd) => {
             let db = Arc::new(Database::new(&cmd.database).await?);
-            update_properties(cmd, db).await?;
+            update_properties(cmd, db).await
+        }
+        Commands::Database(cmd) => {
+            handle_database_command(cmd).await
         }
     }
-
-    Ok(())
 }
 
 async fn list_properties(cmd: &ListCommand, db: &Database) -> Result<()> {
