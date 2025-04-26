@@ -20,6 +20,10 @@ impl ArgenPropScraper {
         }
     }
 
+    fn parse_selector(selector: &str) -> Result<Selector> {
+        Selector::parse(selector).map_err(|e| BreaError::Scraping(e.to_string()))
+    }
+
     fn create_selectors() -> Result<(
         Selector,  // listing_item
         Selector,  // title
@@ -31,28 +35,14 @@ impl ArgenPropScraper {
         Selector,  // next_page
     )> {
         Ok((
-            Selector::parse(".listing__item").map_err(|e| BreaError::Scraping(e.to_string()))?,
-            Selector::parse(".card__title").map_err(|e| BreaError::Scraping(e.to_string()))?,
-            Selector::parse(".card__price").map_err(|e| BreaError::Scraping(e.to_string()))?,
-            Selector::parse(".card__address").map_err(|e| BreaError::Scraping(e.to_string()))?,
-            Selector::parse(".card__main-features li").map_err(|e| BreaError::Scraping(e.to_string()))?,
-            Selector::parse(".card__description").map_err(|e| BreaError::Scraping(e.to_string()))?,
-            Selector::parse(".card__photos img").map_err(|e| BreaError::Scraping(e.to_string()))?,
-            Selector::parse(".pagination__page-next").map_err(|e| BreaError::Scraping(e.to_string()))?,
-        ))
-    }
-
-    fn create_detail_selectors() -> Result<(
-        Selector, Selector, Selector, Selector,
-        Selector, Selector
-    )> {
-        Ok((
-            Selector::parse(".card__title").map_err(|e| BreaError::Scraping(e.to_string()))?,
-            Selector::parse(".card__price").map_err(|e| BreaError::Scraping(e.to_string()))?,
-            Selector::parse(".card__address").map_err(|e| BreaError::Scraping(e.to_string()))?,
-            Selector::parse(".card__info").map_err(|e| BreaError::Scraping(e.to_string()))?,
-            Selector::parse(".card__main-features li span").map_err(|e| BreaError::Scraping(e.to_string()))?,
-            Selector::parse(".card__photos img").map_err(|e| BreaError::Scraping(e.to_string()))?,
+            Self::parse_selector(".listing__item")?,
+            Self::parse_selector(".card__title")?,
+            Self::parse_selector(".card__price")?,
+            Self::parse_selector(".card__address")?,
+            Self::parse_selector(".card__main-features li")?,
+            Self::parse_selector(".card__description")?,
+            Self::parse_selector(".card__photos img")?,
+            Self::parse_selector(".pagination__page-next")?,
         ))
     }
 
@@ -87,80 +77,30 @@ impl ArgenPropScraper {
         cleaned.parse::<f64>().ok()
     }
 
-    fn parse_size(&self, size_text: &str) -> Option<f64> {
-        let cleaned = size_text
-            .trim()
-            .replace("m² cubie.", "")
-            .replace("m² cub.", "")
-            .replace("m²", "")
-            .replace("m2", "")
-            .trim()
-            .to_string();
-            
-        if cleaned.is_empty() {
-            return None;
-        }
-        
-        cleaned.parse::<f64>().ok()
-    }
+    fn extract_features(&self, element: scraper::ElementRef) -> Result<(Option<f64>, Option<i32>, Option<i32>)> {
+        let feature_selector = Self::parse_selector(".card__main-features li")?;
+        let mut covered_size = None;
+        let mut rooms = None;
+        let mut antiquity = None;
 
-    fn parse_rooms(&self, rooms_text: &str) -> Option<i32> {
-        let cleaned = rooms_text
-            .trim()
-            .replace("dorm.", "")
-            .replace("dormitorios", "")
-            .replace("dormitorio", "")
-            .replace("amb.", "")
-            .replace("ambientes", "")
-            .replace("ambiente", "")
-            .trim()
-            .to_string();
-            
-        if cleaned.is_empty() {
-            return None;
-        }
-        
-        cleaned.parse::<i32>().ok()
-    }
-
-    fn parse_antiquity(&self, antiquity_text: &str) -> Option<i32> {
-        let cleaned = antiquity_text
-            .trim()
-            .replace("años", "")
-            .replace("año", "")
-            .replace("a estrenar", "0")
-            .replace("en construcción", "0")
-            .trim()
-            .to_string();
-            
-        if cleaned.is_empty() {
-            return None;
-        }
-        
-        cleaned.parse::<i32>().ok()
-    }
-
-    fn extract_features(&self, element: scraper::ElementRef) -> (f64, i32, i32) {
-        let mut covered_size = 0.0;
-        let mut rooms = 0;
-        let mut antiquity = 0;
-
-        // Get all features from the main-features list
-        let feature_selector = Selector::parse(".card__main-features li").map_err(|e| BreaError::Scraping(e.to_string())).unwrap();
-        let features = element.select(&feature_selector);
-        
-        for feature in features {
-            let text = feature.text().collect::<String>().to_lowercase();
+        for feature in element.select(&feature_selector) {
+            let text = feature.text().collect::<String>().trim().to_string();
             if text.contains("m²") {
-                covered_size = self.parse_size(&text).unwrap_or(0.0);
-            } else if text.contains("dorm") || text.contains("amb") {
-                rooms = self.parse_rooms(&text).unwrap_or(0);
-            } else if text.contains("año") || text.contains("estrenar") || text.contains("construcción") {
-                antiquity = self.parse_antiquity(&text).unwrap_or(0);
+                if let Ok(size) = text.replace("m²", "").trim().parse::<f64>() {
+                    covered_size = Some(size);
+                }
+            } else if text.contains("ambientes") {
+                if let Ok(num_rooms) = text.replace("ambientes", "").trim().parse::<i32>() {
+                    rooms = Some(num_rooms);
+                }
+            } else if text.contains("años") {
+                if let Ok(age) = text.replace("años", "").trim().parse::<i32>() {
+                    antiquity = Some(age);
+                }
             }
         }
 
-        (covered_size, rooms, antiquity)
+        Ok((covered_size, rooms, antiquity))
     }
 
     fn has_next_page(&self, html: &str) -> Result<bool> {
@@ -168,7 +108,7 @@ impl ArgenPropScraper {
         
         // Check if there's a disabled next page button
         let disabled_next = document
-            .select(&Selector::parse(".pagination__page-next.pagination__page--disable").map_err(|e| BreaError::Scraping(e.to_string()))?)
+            .select(&Self::parse_selector(".pagination__page-next.pagination__page--disable")?)
             .next()
             .is_some();
 
@@ -180,7 +120,7 @@ impl ArgenPropScraper {
 
         // Check if there's a next page button
         let next_page = document
-            .select(&Selector::parse(".pagination__page-next").map_err(|e| BreaError::Scraping(e.to_string()))?)
+            .select(&Self::parse_selector(".pagination__page-next")?)
             .next()
             .is_some();
 
@@ -316,7 +256,7 @@ impl Scraper for ArgenPropScraper {
                 .map(|text| text.trim().to_string())
                 .unwrap_or_default();
 
-            let property_url = item.select(&Selector::parse("a.card").map_err(|e| BreaError::Scraping(e.to_string()))?)
+            let property_url = item.select(&Self::parse_selector("a.card")?)
                 .next()
                 .and_then(|el| el.value().attr("href"))
                 .map(|href| {
@@ -329,7 +269,7 @@ impl Scraper for ArgenPropScraper {
                 .unwrap_or_default();
 
             // Extract the external_id from the data-item-card attribute
-            let external_id = item.select(&Selector::parse("a.card").map_err(|e| BreaError::Scraping(e.to_string()))?)
+            let external_id = item.select(&Self::parse_selector("a.card")?)
                 .next()
                 .and_then(|el| el.value().attr("data-item-card"))
                 .unwrap_or_default()
@@ -347,7 +287,7 @@ impl Scraper for ArgenPropScraper {
                 .map(|addr| addr.trim().to_string())
                 .unwrap_or_default();
 
-            let (covered_size, rooms, antiquity) = self.extract_features(item);
+            let (covered_size, rooms, antiquity) = self.extract_features(item)?;
 
             let description = item.select(&description_selector)
                 .next()

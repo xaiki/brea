@@ -36,15 +36,15 @@ This test plan covers the testing strategy for the BREA Real Estate Analyzer pro
 - [x] Property CRUD operations
 - [x] Property image CRUD operations
 - [x] Price history cleanup
-- [ ] Concurrent access handling
-- [ ] Transaction rollback scenarios
-- [ ] Database migration tests
+- [x] Concurrent access handling
+- [x] Transaction rollback scenarios
+- [x] Database migration tests
 
 ### 1.3 Error Handling
 - [x] Custom error type display
-- [ ] Error propagation
-- [ ] Error recovery scenarios
-- [ ] Database error handling
+- [x] Error propagation
+- [x] Error recovery scenarios
+- [x] Database error handling
 - [ ] Scraper error handling
 
 ## 2. Scraper Testing
@@ -70,7 +70,7 @@ This test plan covers the testing strategy for the BREA Real Estate Analyzer pro
   - [ ] Invalid responses
 
 ### 2.2 Scraper Factory
-- [ ] Scraper creation
+- [x] Scraper creation
 - [ ] Scraper type validation
 - [ ] Error handling for invalid types
 
@@ -152,8 +152,13 @@ This test plan covers the testing strategy for the BREA Real Estate Analyzer pro
 
 ### 7.1 Running Tests
 ```bash
-# Run all tests
-cargo test
+# Run all tests in all crates
+cargo test --all
+
+# Run tests for a specific crate
+cargo test -p brea-core
+cargo test -p brea-scrapers
+cargo test -p brea-cli
 
 # Run specific test module
 cargo test module_name
@@ -163,13 +168,41 @@ RUST_LOG=debug cargo test
 
 # Run with test database
 DATABASE_URL=sqlite:test.db cargo test
+
+# Run tests in parallel (default)
+cargo test -- --test-threads=1
+
+# Show test output for passing tests
+cargo test -- --show-output
+
+# Run tests with specific features
+cargo test --features test-utils
 ```
 
-### 7.2 Test Reports
-- Test coverage reports
+### 7.2 Test Organization
+- Unit tests are placed in the same file as the code being tested using `#[cfg(test)]` modules
+- Integration tests are placed in the `tests/` directory of each crate
+- Test data files are stored in the `test_data/` directory
+- Mock responses are stored in the `debug/` directory
+- Each test module should clean up its test data after execution
+
+### 7.3 Test Reports
+- Test coverage reports (using cargo-tarpaulin)
+```bash
+cargo tarpaulin --all-features --workspace
+```
 - Test duration tracking
+```bash
+cargo test -- --report-time
+```
 - Error reporting
+```bash
+cargo test -- --nocapture
+```
 - Performance metrics
+```bash
+cargo test -- --bench
+```
 
 ## 8. Maintenance
 

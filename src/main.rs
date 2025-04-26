@@ -254,6 +254,10 @@ async fn main() -> Result<()> {
                 cmd.max_price,
                 cmd.min_size,
                 cmd.max_size,
+                Some(cmd.limit),
+                Some(cmd.offset),
+                Some(&cmd.sort_by),
+                matches!(cmd.sort_order, SortOrder::Desc),
             ).await?;
 
             let mut displays = Vec::new();
@@ -267,7 +271,17 @@ async fn main() -> Result<()> {
         }
         Commands::Export(cmd) => {
             let db = Database::new(&cmd.database).await?;
-            let properties = db.list_properties(None, None, None, None, None).await?;
+            let properties = db.list_properties(
+                None,  // source
+                None,  // min_price
+                None,  // max_price
+                None,  // min_size
+                None,  // max_size
+                None,  // limit
+                None,  // offset
+                None,  // sort_by
+                false, // sort_desc
+            ).await?;
 
             let mut writer = Writer::from_path(&cmd.output)?;
             writer.write_record(&["Title", "Price (USD)", "Size (m²)", "Rooms", "Antiquity (years)", "Address"])?;
@@ -275,9 +289,9 @@ async fn main() -> Result<()> {
                 writer.write_record(&[
                     property.title,
                     property.price_usd.to_string(),
-                    property.covered_size.to_string(),
-                    property.rooms.to_string(),
-                    property.antiquity.to_string(),
+                    property.covered_size.map(|s| s.to_string()).unwrap_or_else(|| "N/A".to_string()),
+                    property.rooms.map(|r| r.to_string()).unwrap_or_else(|| "N/A".to_string()),
+                    property.antiquity.map(|a| a.to_string()).unwrap_or_else(|| "N/A".to_string()),
                     property.address,
                 ])?;
             }
@@ -288,7 +302,17 @@ async fn main() -> Result<()> {
             let db = Database::new(&cmd.database).await?;
 
             // Get all unique property types and districts from the database
-            let properties = db.list_properties(None, None, None, None, None).await?;
+            let properties = db.list_properties(
+                None,  // source
+                None,  // min_price
+                None,  // max_price
+                None,  // min_size
+                None,  // max_size
+                None,  // limit
+                None,  // offset
+                None,  // sort_by
+                false, // sort_desc
+            ).await?;
             let mut property_types = std::collections::HashSet::new();
             let mut districts = std::collections::HashSet::new();
 

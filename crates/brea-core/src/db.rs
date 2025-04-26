@@ -442,6 +442,10 @@ impl Database {
         max_price: Option<f64>,
         min_size: Option<f64>,
         max_size: Option<f64>,
+        limit: Option<i64>,
+        offset: Option<i64>,
+        sort_by: Option<&str>,
+        sort_desc: bool,
     ) -> Result<Vec<Property>> {
         let mut query_builder: QueryBuilder<Sqlite> = QueryBuilder::new(
             r#"
@@ -491,7 +495,23 @@ impl Database {
             query_builder.push_bind(max_size);
         }
 
-        query_builder.push(" ORDER BY created_at DESC");
+        // Add sorting
+        let sort_field = sort_by.unwrap_or("created_at");
+        query_builder.push(" ORDER BY ");
+        query_builder.push(sort_field);
+        if sort_desc {
+            query_builder.push(" DESC");
+        }
+
+        // Add pagination
+        if let Some(limit) = limit {
+            query_builder.push(" LIMIT ");
+            query_builder.push_bind(limit);
+        }
+        if let Some(offset) = offset {
+            query_builder.push(" OFFSET ");
+            query_builder.push_bind(offset);
+        }
 
         let query = query_builder.build_query_as::<Property>();
         let properties = query.fetch_all(&self.pool).await?;

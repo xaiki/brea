@@ -33,11 +33,19 @@ impl PropertyTableRow {
             .map(|h| h.to_ascii_graph(12, graph_height as usize).replace('\n', " "))
             .unwrap_or_else(|| "No hist".to_string());
 
+        let size_str = display.property.covered_size
+            .map(|s| format!("{}m²", s.round() as i64))
+            .unwrap_or_else(|| "N/A".to_string());
+
+        let rooms_str = display.property.rooms
+            .map(|r| r.to_string())
+            .unwrap_or_else(|| "N/A".to_string());
+
         Self {
             title: display.property.title.clone(),
             price_history: history,
-            size: format!("{}m²", display.property.covered_size.round() as i64),
-            rooms: display.property.rooms.to_string(),
+            size: size_str,
+            rooms: rooms_str,
             address: display.property.address.clone(),
         }
     }
