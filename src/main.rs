@@ -284,15 +284,23 @@ async fn main() -> Result<()> {
             ).await?;
 
             let mut writer = Writer::from_path(&cmd.output)?;
-            writer.write_record(&["Title", "Price (USD)", "Size (m²)", "Rooms", "Antiquity (years)", "Address"])?;
+            writer.write_record(&[
+                "ID", "Title", "Price (USD)", "Covered Size (m²)", "Rooms",
+                "Antiquity (years)", "Address", "District", "Property Type", "Source", "URL"
+            ])?;
             for property in properties {
                 writer.write_record(&[
+                    property.id.map(|id| id.to_string()).unwrap_or_else(|| "".to_string()),
                     property.title,
                     property.price_usd.to_string(),
-                    property.covered_size.map(|s| s.to_string()).unwrap_or_else(|| "N/A".to_string()),
-                    property.rooms.map(|r| r.to_string()).unwrap_or_else(|| "N/A".to_string()),
-                    property.antiquity.map(|a| a.to_string()).unwrap_or_else(|| "N/A".to_string()),
+                    property.covered_size.map(|s| s.to_string()).unwrap_or_else(|| "".to_string()),
+                    property.rooms.map(|r| r.to_string()).unwrap_or_else(|| "".to_string()),
+                    property.antiquity.map(|a| a.to_string()).unwrap_or_else(|| "".to_string()),
                     property.address,
+                    property.district,
+                    property.property_type.map(|t| t.to_string()).unwrap_or_else(|| "".to_string()),
+                    property.source,
+                    property.url.to_string(),
                 ])?;
             }
             writer.flush()?;

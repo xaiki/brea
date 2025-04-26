@@ -35,9 +35,9 @@ const MIGRATIONS: &[Migration] = &[
             description TEXT,
             price_usd REAL NOT NULL,
             address TEXT NOT NULL,
-            covered_size REAL NOT NULL,
-            rooms INTEGER NOT NULL,
-            antiquity INTEGER NOT NULL,
+            covered_size REAL,
+            rooms INTEGER,
+            antiquity INTEGER,
             url TEXT NOT NULL,
             created_at DATETIME NOT NULL,
             updated_at DATETIME NOT NULL,
@@ -48,6 +48,44 @@ const MIGRATIONS: &[Migration] = &[
     },
     Migration {
         version: 2,
+        up: r#"
+        -- Create a temporary table with the new schema
+        CREATE TABLE properties_new (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            external_id TEXT NOT NULL,
+            source TEXT NOT NULL,
+            property_type TEXT,
+            district TEXT NOT NULL,
+            title TEXT NOT NULL,
+            description TEXT,
+            price_usd REAL NOT NULL,
+            address TEXT NOT NULL,
+            covered_size REAL,
+            rooms INTEGER,
+            antiquity INTEGER,
+            url TEXT NOT NULL,
+            created_at DATETIME NOT NULL,
+            updated_at DATETIME NOT NULL,
+            UNIQUE(source, external_id)
+        );
+
+        -- Copy data from the old table to the new one
+        INSERT INTO properties_new 
+        SELECT * FROM properties;
+
+        -- Drop the old table
+        DROP TABLE properties;
+
+        -- Rename the new table to the original name
+        ALTER TABLE properties_new RENAME TO properties;
+        "#,
+        down: r#"
+        -- This is a destructive migration, we can't restore NULL constraints
+        -- without potentially losing data
+        "#,
+    },
+    Migration {
+        version: 3,
         up: r#"
         CREATE TABLE IF NOT EXISTS property_price_history (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -61,7 +99,7 @@ const MIGRATIONS: &[Migration] = &[
         down: "DROP TABLE IF EXISTS property_price_history",
     },
     Migration {
-        version: 3,
+        version: 4,
         up: r#"
         CREATE TABLE IF NOT EXISTS property_images (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -401,7 +439,23 @@ impl Database {
         .await?;
 
         // Update the property ID
-        property.id = Some(row.get::<i64, _>(0));
+        let property_id = row.get::<i64, _>(0);
+        property.id = Some(property_id);
+
+        // Record price history
+        sqlx::query(
+            r#"
+            INSERT INTO property_price_history (property_id, price_usd, observed_at)
+            VALUES (?, ?, ?)
+            ON CONFLICT(property_id, observed_at) DO UPDATE SET
+                price_usd = excluded.price_usd
+            "#,
+        )
+        .bind(property_id)
+        .bind(*price_usd)
+        .bind(*updated_at)
+        .execute(&self.pool)
+        .await?;
 
         Ok(())
     }

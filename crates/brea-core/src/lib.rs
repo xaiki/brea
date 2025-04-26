@@ -63,20 +63,20 @@ impl sqlx::Type<sqlx::Sqlite> for PropertyType {
 impl<'r> sqlx::Decode<'r, sqlx::Sqlite> for PropertyType {
     fn decode(value: sqlx::sqlite::SqliteValueRef<'r>) -> std::result::Result<Self, Box<dyn std::error::Error + Send + Sync>> {
         let text = <&str as sqlx::Decode<sqlx::Sqlite>>::decode(value)?;
-        match text {
-            "house" => Ok(PropertyType::House),
-            "apartment" => Ok(PropertyType::Apartment),
-            "land" => Ok(PropertyType::Land),
+        match text.to_lowercase().as_str() {
+            "house" | "houses" | "casa" | "casas" => Ok(PropertyType::House),
+            "apartment" | "apartments" | "departamento" | "departamentos" => Ok(PropertyType::Apartment),
+            "land" | "lands" | "terreno" | "terrenos" => Ok(PropertyType::Land),
             "ph" => Ok(PropertyType::Ph),
-            "local" => Ok(PropertyType::Local),
-            "field" => Ok(PropertyType::Field),
-            "garage" => Ok(PropertyType::Garage),
-            "commercial_premises" => Ok(PropertyType::CommercialPremises),
-            "warehouse" => Ok(PropertyType::Warehouse),
-            "hotel" => Ok(PropertyType::Hotel),
-            "special_business" => Ok(PropertyType::SpecialBusiness),
-            "office" => Ok(PropertyType::Office),
-            "country_house" => Ok(PropertyType::CountryHouse),
+            "local" | "locales" => Ok(PropertyType::Local),
+            "field" | "fields" | "campo" | "campos" => Ok(PropertyType::Field),
+            "garage" | "garages" | "cochera" | "cocheras" => Ok(PropertyType::Garage),
+            "commercial" | "commercial-premises" | "fondo-comercio" | "commercial premises" => Ok(PropertyType::CommercialPremises),
+            "warehouse" | "warehouses" | "galpon" | "galpones" => Ok(PropertyType::Warehouse),
+            "hotel" | "hotels" => Ok(PropertyType::Hotel),
+            "special-business" | "special-businesses" | "negocio-especial" | "special business" => Ok(PropertyType::SpecialBusiness),
+            "office" | "offices" | "oficina" | "oficinas" => Ok(PropertyType::Office),
+            "country-house" | "country-houses" | "quinta" | "quintas" => Ok(PropertyType::CountryHouse),
             _ => Err(format!("Unknown property type: {}", text).into()),
         }
     }
@@ -92,12 +92,12 @@ impl sqlx::Encode<'_, sqlx::Sqlite> for PropertyType {
             PropertyType::Local => "local",
             PropertyType::Field => "field",
             PropertyType::Garage => "garage",
-            PropertyType::CommercialPremises => "commercial_premises",
+            PropertyType::CommercialPremises => "commercial premises",
             PropertyType::Warehouse => "warehouse",
             PropertyType::Hotel => "hotel",
-            PropertyType::SpecialBusiness => "special_business",
+            PropertyType::SpecialBusiness => "special business",
             PropertyType::Office => "office",
-            PropertyType::CountryHouse => "country_house",
+            PropertyType::CountryHouse => "country house",
         };
         args.push(sqlx::sqlite::SqliteArgumentValue::Text(text.into()));
         sqlx::encode::IsNull::No
@@ -136,10 +136,10 @@ impl FromStr for PropertyType {
             "local" | "locales" => Ok(PropertyType::Local),
             "field" | "fields" | "campo" | "campos" => Ok(PropertyType::Field),
             "garage" | "garages" | "cochera" | "cocheras" => Ok(PropertyType::Garage),
-            "commercial" | "commercial-premises" | "fondo-comercio" => Ok(PropertyType::CommercialPremises),
+            "commercial" | "commercial-premises" | "fondo-comercio" | "commercial premises" => Ok(PropertyType::CommercialPremises),
             "warehouse" | "warehouses" | "galpon" | "galpones" => Ok(PropertyType::Warehouse),
             "hotel" | "hotels" => Ok(PropertyType::Hotel),
-            "special-business" | "special-businesses" | "negocio-especial" => Ok(PropertyType::SpecialBusiness),
+            "special-business" | "special-businesses" | "negocio-especial" | "special business" => Ok(PropertyType::SpecialBusiness),
             "office" | "offices" | "oficina" | "oficinas" => Ok(PropertyType::Office),
             "country-house" | "country-houses" | "quinta" | "quintas" => Ok(PropertyType::CountryHouse),
             _ => Err(format!(

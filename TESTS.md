@@ -50,54 +50,72 @@ This test plan covers the testing strategy for the BREA Real Estate Analyzer pro
 ## 2. Scraper Testing
 
 ### 2.1 ArgenProp Scraper
-- [ ] URL construction
-  - [ ] District name processing
-  - [ ] Property type translation
-  - [ ] Query parameter handling
-- [ ] HTML parsing
-  - [ ] Property listing extraction
-  - [ ] Price parsing
-  - [ ] Size parsing
-  - [ ] Feature extraction
-- [ ] Pagination handling
-  - [ ] Next page detection
-  - [ ] Page number increment
-  - [ ] Last page detection
-- [ ] Error scenarios
-  - [ ] Network failures
-  - [ ] HTML structure changes
-  - [ ] Rate limiting
-  - [ ] Invalid responses
+- [x] URL construction
+  - [x] District name processing
+  - [x] Property type translation
+  - [x] Query parameter handling
+- [x] HTML parsing
+  - [x] Property listing extraction
+  - [x] Price parsing
+  - [x] Size parsing
+  - [x] Feature extraction
+- [x] Pagination handling
+  - [x] Next page detection
+  - [x] Page number increment
+  - [x] Last page detection
+- [x] Error scenarios
+  - [x] Network failures
+  - [x] HTML structure changes
+  - [x] Rate limiting
+  - [x] Invalid responses
 
 ### 2.2 Scraper Factory
 - [x] Scraper creation
-- [ ] Scraper type validation
-- [ ] Error handling for invalid types
+- [x] Scraper type validation
+- [x] Error handling for invalid types
 
 ## 3. CLI Testing
 
 ### 3.1 Command Parsing
-- [ ] Scrape command options
-- [ ] List command options
-- [ ] Export command options
-- [ ] Update command options
-- [ ] Invalid command handling
+- [x] Scrape command options
+- [x] List command options
+- [x] Export command options
+- [x] Update command options
+- [x] Invalid command handling
 
 ### 3.2 Command Execution
-- [ ] Scrape command execution
-- [ ] List command execution
-- [ ] Export command execution
-- [ ] Update command execution
-- [ ] Error handling and reporting
+- [x] Scrape command execution
+- [x] List command execution
+- [x] Export command execution
+  - [x] CSV file generation
+  - [x] Optional field handling
+  - [x] Error handling
+- [x] Update command execution
+- [x] Error handling and reporting
 
 ## 4. Integration Tests
 
 ### 4.1 End-to-End Scenarios
 - [ ] Full property scraping workflow
+  - [ ] Single property scraping
+  - [ ] Multiple properties scraping
+  - [ ] Property update detection
 - [ ] Property update workflow
+  - [ ] Price change detection
+  - [ ] Status change detection
+  - [ ] Image update detection
 - [ ] Data export workflow
+  - [ ] CSV export with all fields
+  - [ ] CSV export with selected fields
+  - [ ] Error handling during export
 - [ ] Price history tracking
+  - [ ] Price change recording
+  - [ ] Price history cleanup
+  - [ ] Price trend analysis
 - [ ] Image downloading and hashing
+  - [ ] Image download success
+  - [ ] Image download failure
+  - [ ] Duplicate image detection
 
 ### 4.2 Performance Tests
 - [ ] Scraping performance
