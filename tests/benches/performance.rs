@@ -19,7 +19,7 @@ async fn setup_test_db() -> Database {
 fn generate_fake_properties(count: usize) -> Vec<Property> {
     (0..count)
         .map(|_| {
-            let mut property = Property {
+            let property = Property {
                 id: None,
                 external_id: Faker.fake(),
                 source: "benchmark".to_string(),
@@ -116,7 +116,7 @@ fn bench_scraper_operations(c: &mut Criterion) {
 
     // Benchmark HTML parsing with real sample data
     group.bench_function("html_parsing", |b| {
-        let _html = include_str!("../../debug/argenprop_House_boca_1.html");
+        let _html = include_str!("../debug/argenprop_House_boca_1.html");
         let scraper = ArgenPropScraper::new();
         let query = ScrapeQuery {
             district: "Boca".to_string(),
