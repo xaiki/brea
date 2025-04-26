@@ -37,13 +37,9 @@ jobs:
           # Build benchmarks first
           cargo bench --no-run
           # Run benchmarks and capture the output
-          RUST_TEST_THREADS=1 cargo bench -- -Z unstable-options --format json > output.txt
-          # Process the JSON output to match the expected format
-          cat output.txt | jq -r '.[] | select(.name != null) | "\(.name) \(.median)"' > benchmark.txt
-          # If the file is empty, create a dummy entry to prevent the action from failing
-          if [ ! -s benchmark.txt ]; then
-            echo "dummy_benchmark 1000" > benchmark.txt
-          fi
+          cargo bench --bench performance -- --output-format criterion > output.txt
+          # Extract benchmark results and convert to the expected format
+          grep "time:" output.txt | awk '{print $1 " " $4}' > benchmark.txt
 
       - name: Store benchmark result
         uses: benchmark-action/github-action-benchmark@v1
