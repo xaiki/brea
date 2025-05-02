@@ -1,5 +1,5 @@
 window.BENCHMARK_DATA = {
-  "lastUpdate": 1745680722221,
+  "lastUpdate": 1746221634143,
   "repoUrl": "https://github.com/xaiki/brea",
   "entries": {
     "Rust Benchmarks": [
@@ -95,6 +95,84 @@ window.BENCHMARK_DATA = {
             "name": "concurrent/concurrent_query/100",
             "value": 129396710,
             "range": "± 639247",
+            "unit": "ns/iter"
+          }
+        ]
+      },
+      {
+        "commit": {
+          "author": {
+            "email": "xaiki@evilgiggle.com",
+            "name": "Niv Sardi",
+            "username": "xaiki"
+          },
+          "committer": {
+            "email": "xaiki@evilgiggle.com",
+            "name": "Niv Sardi",
+            "username": "xaiki"
+          },
+          "distinct": true,
+          "id": "d2a57cd7897691fd70d21e5d4d0d0a1ccb95588f",
+          "message": "chore: remove benchmark.txt from tracking to allow gh-pages management",
+          "timestamp": "2025-05-02T18:27:08-03:00",
+          "tree_id": "af8eb68468ff849b4b4dee14f7fb8c9addd7e39d",
+          "url": "https://github.com/xaiki/brea/commit/d2a57cd7897691fd70d21e5d4d0d0a1ccb95588f"
+        },
+        "date": 1746221633799,
+        "tool": "cargo",
+        "benches": [
+          {
+            "name": "database/insert/10",
+            "value": 5480078,
+            "range": "± 76367",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "database/insert/100",
+            "value": 24834513,
+            "range": "± 173704",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "database/insert/1000",
+            "value": 223588493,
+            "range": "± 2631737",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "database/query/10",
+            "value": 5660789,
+            "range": "± 61188",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "database/query/100",
+            "value": 26165503,
+            "range": "± 254561",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "database/query/1000",
+            "value": 231783883,
+            "range": "± 840409",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "scraper/scrape_query",
+            "value": 198032828,
+            "range": "± 771001",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "concurrent/concurrent_queries/10",
+            "value": 7578500,
+            "range": "± 40824",
+            "unit": "ns/iter"
+          },
+          {
+            "name": "concurrent/concurrent_queries/100",
+            "value": 113432759,
+            "range": "± 805849",
             "unit": "ns/iter"
           }
         ]
