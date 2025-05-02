@@ -1,0 +1,159 @@
+---
+description: 
+globs: *.rs
+alwaysApply: false
+---
+ # Rust Code Quality Rules
+
+## Overview
+These rules ensure high-quality Rust code by enforcing strict linting and error handling practices. The AI must resolve all linter errors before returning control to the user.
+
+## Rules
+
+### 1. Linter Error Resolution
+✅ DO fix all linter errors before completing a response
+✅ DO explain the fixes made for each category of linter errors
+❌ DON'T return control while linter errors exist
+```rust
+// Good
+// Fixed: "no field `city` on type `Property`" by updating struct fields
+struct Property {
+    city: String,  // Added missing field
+}
+
+// Bad
+// Leaving errors unresolved:
+struct Property {}  // Missing required fields
+```
+
+### 2. Type Safety
+✅ DO ensure all type conversions are explicit and safe
+✅ DO handle Option types appropriately
+❌ DON'T ignore type mismatch warnings
+```rust
+// Good
+let id: i64 = property.id.unwrap_or_default();
+
+// Bad
+let id = property.id;  // Type mismatch with Option<i64>
+```
+
+### 3. Import Resolution
+✅ DO verify all imports are properly resolved
+✅ DO add necessary dependencies to Cargo.toml
+❌ DON'T leave unresolved imports
+```rust
+// Good
+use chrono::{DateTime, Utc};  // Verified import exists
+
+// Bad
+use nonexistent::Module;  // Unresolved import
+```
+
+### 4. Struct Field Handling
+✅ DO ensure all required struct fields are present
+✅ DO match field types exactly as defined
+❌ DON'T leave missing fields unaddressed
+```rust
+// Good
+let property = Property {
+    id: 1,
+    name: String::from("test"),
+    // ... all required fields
+};
+
+// Bad
+let property = Property {
+    id: 1,  // Missing other required fields
+};
+```
+
+### 5. Method Resolution
+✅ DO implement all required traits and methods
+✅ DO fix "no method found" errors
+❌ DON'T ignore missing method implementations
+```rust
+// Good
+impl Display for MyType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.0)
+    }
+}
+
+// Bad
+// Missing implementation for required trait
+```
+
+### 6. Serialization
+✅ DO implement Serialize/Deserialize when needed
+✅ DO handle custom serialization correctly
+❌ DON'T ignore serialization trait bounds
+```rust
+// Good
+#[derive(Serialize, Deserialize)]
+struct MyType {
+    // fields...
+}
+
+// Bad
+// Missing derive attributes for serde
+```
+
+### 7. Error Handling
+✅ DO handle all Result and Option types
+✅ DO provide proper error conversions
+❌ DON'T unwrap without error handling
+```rust
+// Good
+let value = result.map_err(|e| MyError::from(e))?;
+
+// Bad
+let value = result.unwrap();  // Dangerous unwrap
+```
+
+### 8. DateTime Handling
+✅ DO use consistent DateTime types
+✅ DO handle timezone conversions explicitly
+❌ DON'T mix String and DateTime types
+```rust
+// Good
+let timestamp: DateTime<Utc> = Utc::now();
+
+// Bad
+let timestamp: String = Utc::now();  // Type mismatch
+```
+
+## Enforcement
+The AI must:
+1. Scan for all linter errors in modified files
+2. Categorize and explain each type of error
+3. Fix all errors before returning control
+4. Verify fixes don't introduce new errors
+5. Document all changes made
+6. Treat errors one by one, do not try to fix more than 1 linter error at a time.
+7. run tests to make sure all errors are fixed
+
+## Benefits
+1. Maintains code quality
+2. Prevents compilation errors
+3. Ensures type safety
+4. Reduces technical debt
+5. Improves code maintainability
+
+## Error Categories to Check
+1. Type mismatches
+2. Missing fields
+3. Unresolved imports
+4. Missing trait implementations
+5. Incorrect method calls
+6. Serialization issues
+7. DateTime conversions
+8. Option/Result handling
+
+## Resolution Process
+1. Identify all linter errors
+2. Group similar errors
+3. Fix most critical errors first
+4. Verify fixes
+5. Document changes
+6. Only return control when all errors are resolved 

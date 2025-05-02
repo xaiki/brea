@@ -1,13 +1,15 @@
 use brea_core::{Database, PropertyType};
+use brea_core::db::migrations::apply_migrations;
+use brea_core::db::types::DbTimestamp;
 use brea_scrapers::{ArgenPropScraper, Scraper};
 use tempfile::tempdir;
 use std::sync::Arc;
+use std::fs;
 
 #[tokio::test]
 async fn test_single_property_scraping() {
-    let temp_dir = tempdir().unwrap();
-    let db_path = temp_dir.path().join("test.db");
-    let db = Database::new(&db_path).await.unwrap();
+    let db = Database::new(":memory:").await.unwrap();
+    apply_migrations(db.pool()).await.unwrap();
 
     // Create a scraper for ArgenProp
     let scraper = ArgenPropScraper::new();
@@ -36,15 +38,14 @@ async fn test_single_property_scraping() {
     }
 
     // Verify that the properties were saved
-    let saved_properties = db.list_properties(None, None, None, None, None, None, None, None, false).await.unwrap();
+    let saved_properties = db.get_properties().await.unwrap();
     assert!(!saved_properties.is_empty());
 }
 
 #[tokio::test]
 async fn test_multiple_properties_scraping() {
-    let temp_dir = tempdir().unwrap();
-    let db_path = temp_dir.path().join("test.db");
-    let db = Database::new(&db_path).await.unwrap();
+    let db = Database::new(":memory:").await.unwrap();
+    apply_migrations(db.pool()).await.unwrap();
 
     // Create a scraper for ArgenProp
     let scraper = ArgenPropScraper::new();
@@ -77,15 +78,14 @@ async fn test_multiple_properties_scraping() {
     }
 
     // Verify that all properties were saved
-    let saved_properties = db.list_properties(None, None, None, None, None, None, None, None, false).await.unwrap();
+    let saved_properties = db.get_properties().await.unwrap();
     assert!(saved_properties.len() > 1);
 }
 
 #[tokio::test]
 async fn test_property_update_detection() {
-    let temp_dir = tempdir().unwrap();
-    let db_path = temp_dir.path().join("test.db");
-    let db = Database::new(&db_path).await.unwrap();
+    let db = Database::new(":memory:").await.unwrap();
+    apply_migrations(db.pool()).await.unwrap();
 
     // Create a scraper for ArgenProp
     let scraper = ArgenPropScraper::new();
@@ -134,12 +134,12 @@ async fn test_property_update_detection() {
     }
 
     // Verify that we can detect updates
-    let saved_properties = db.list_properties(None, None, None, None, None, None, None, None, false).await.unwrap();
+    let saved_properties = db.get_properties().await.unwrap();
     assert!(!saved_properties.is_empty());
 
     // Check that we have price history entries
     for property in saved_properties {
-        let price_history = db.get_price_history(property.id.unwrap()).await.unwrap();
+        let price_history = db.get_price_history(property.id).await.unwrap();
         assert!(!price_history.is_empty());
     }
 }
@@ -184,9 +184,8 @@ async fn test_scraping_with_filters() -> Result<(), Box<dyn std::error::Error>> 
 
 #[tokio::test]
 async fn test_scraping_with_database() -> Result<(), Box<dyn std::error::Error>> {
-    let temp_dir = tempdir()?;
-    let db_path = temp_dir.path().join("test.db");
-    let db = Database::new(&db_path).await?;
+    let db = Database::new(":memory:").await?;
+    apply_migrations(db.pool()).await?;
     let db = Arc::new(db);
     let scraper = brea_scrapers::ScraperFactory::create_scraper(brea_scrapers::ScraperType::Argenprop);
     
@@ -207,9 +206,8 @@ async fn test_scraping_with_database() -> Result<(), Box<dyn std::error::Error>>
 
 #[tokio::test]
 async fn test_scraping_with_database_and_filters() -> Result<(), Box<dyn std::error::Error>> {
-    let temp_dir = tempdir()?;
-    let db_path = temp_dir.path().join("test.db");
-    let db = Database::new(&db_path).await?;
+    let db = Database::new(":memory:").await?;
+    apply_migrations(db.pool()).await?;
     let db = Arc::new(db);
     let scraper = brea_scrapers::ScraperFactory::create_scraper(brea_scrapers::ScraperType::Argenprop);
     

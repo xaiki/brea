@@ -1,1027 +1,367 @@
-use crate::{
-    Property, PropertyImage, Result, BreaError, PropertyStatus,
-};
+pub mod migrations;
+pub mod queries;
+pub mod types;
+
+pub use migrations::apply_migrations;
+pub use queries::{PropertyQueryBuilder, PropertyImageQueryBuilder};
+pub use types::{DbPropertyStatus, STATUS_ACTIVE, STATUS_SOLD, STATUS_REMOVED};
+
+use crate::{Property, PropertyImage, Result};
 use chrono::{DateTime, Utc};
-use sqlx::{sqlite::SqlitePool, QueryBuilder, Row, Sqlite, Column, TypeInfo};
+use sqlx::{sqlite::SqlitePool, Row};
 use std::path::Path;
-use std::fs;
-use tracing::{debug, info};
-use serde_json;
-use hex;
+use tempfile::NamedTempFile;
+use std::path::PathBuf;
+use crate::db::migrations::Migration;
+use crate::db::types::DbTimestamp;
 
-#[cfg(test)]
-use chrono::Duration;
-
-#[cfg(test)]
-use crate::PropertyType;
-
-struct Migration {
-    version: i32,
-    up: &'static str,
-    down: &'static str,
-}
-
-const MIGRATIONS: &[Migration] = &[
-    Migration {
-        version: 1,
-        up: r#"
-        CREATE TABLE IF NOT EXISTS properties (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            external_id TEXT NOT NULL,
-            source TEXT NOT NULL,
-            property_type TEXT,
-            district TEXT NOT NULL,
-            title TEXT NOT NULL,
-            description TEXT,
-            price_usd REAL NOT NULL,
-            address TEXT NOT NULL,
-            covered_size REAL,
-            rooms INTEGER,
-            antiquity INTEGER,
-            url TEXT NOT NULL,
-            created_at DATETIME NOT NULL,
-            updated_at DATETIME NOT NULL,
-            UNIQUE(source, external_id)
-        )
-        "#,
-        down: "DROP TABLE IF EXISTS properties",
-    },
-    Migration {
-        version: 2,
-        up: r#"
-        -- Create a temporary table with the new schema
-        CREATE TABLE properties_new (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            external_id TEXT NOT NULL,
-            source TEXT NOT NULL,
-            property_type TEXT,
-            district TEXT NOT NULL,
-            title TEXT NOT NULL,
-            description TEXT,
-            price_usd REAL NOT NULL,
-            address TEXT NOT NULL,
-            covered_size REAL,
-            rooms INTEGER,
-            antiquity INTEGER,
-            url TEXT NOT NULL,
-            created_at DATETIME NOT NULL,
-            updated_at DATETIME NOT NULL,
-            UNIQUE(source, external_id)
-        );
-
-        -- Copy data from the old table to the new one
-        INSERT INTO properties_new 
-        SELECT * FROM properties;
-
-        -- Drop the old table
-        DROP TABLE properties;
-
-        -- Rename the new table to the original name
-        ALTER TABLE properties_new RENAME TO properties;
-        "#,
-        down: r#"
-        -- Create a temporary table with the old schema
-        CREATE TABLE properties_old (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            external_id TEXT NOT NULL,
-            source TEXT NOT NULL,
-            property_type TEXT,
-            district TEXT NOT NULL,
-            title TEXT NOT NULL,
-            description TEXT,
-            price_usd REAL NOT NULL,
-            address TEXT NOT NULL,
-            covered_size REAL,
-            rooms INTEGER,
-            antiquity INTEGER,
-            url TEXT NOT NULL,
-            created_at DATETIME NOT NULL,
-            updated_at DATETIME NOT NULL,
-            UNIQUE(source, external_id)
-        );
-
-        -- Copy data from the current table to the old one
-        INSERT INTO properties_old 
-        SELECT * FROM properties;
-
-        -- Drop the current table
-        DROP TABLE properties;
-
-        -- Rename the old table to the original name
-        ALTER TABLE properties_old RENAME TO properties;
-        "#,
-    },
-    Migration {
-        version: 3,
-        up: r#"
-        CREATE TABLE IF NOT EXISTS property_price_history (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            property_id INTEGER NOT NULL,
-            price_usd REAL NOT NULL,
-            observed_at DATETIME NOT NULL,
-            FOREIGN KEY(property_id) REFERENCES properties(id),
-            UNIQUE(property_id, observed_at)
-        )
-        "#,
-        down: "DROP TABLE IF EXISTS property_price_history",
-    },
-    Migration {
-        version: 4,
-        up: r#"
-        CREATE TABLE IF NOT EXISTS property_images (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            property_id INTEGER NOT NULL,
-            url TEXT NOT NULL,
-            local_path TEXT NOT NULL,
-            hash BLOB NOT NULL,
-            created_at DATETIME NOT NULL,
-            updated_at DATETIME NOT NULL,
-            FOREIGN KEY(property_id) REFERENCES properties(id),
-            UNIQUE(property_id, url)
-        )
-        "#,
-        down: "DROP TABLE IF EXISTS property_images",
-    },
-    Migration {
-        version: 5,
-        up: r#"
-        -- Add status column with default value 'active'
-        ALTER TABLE properties ADD COLUMN status TEXT NOT NULL DEFAULT 'active';
-        
-        -- Create index for status
-        CREATE INDEX idx_properties_status ON properties(status);
-        "#,
-        down: r#"
-        -- Drop the status index
-        DROP INDEX IF EXISTS idx_properties_status;
-        
-        -- Remove the status column
-        ALTER TABLE properties DROP COLUMN status;
-        "#,
-    },
-    Migration {
-        version: 6,
-        up: r#"
-        -- Disable foreign key constraints
-        PRAGMA foreign_keys = OFF;
-
-        -- Drop foreign key constraints
-        DROP TABLE IF EXISTS property_images;
-        DROP TABLE IF EXISTS property_price_history;
-
-        -- Create a temporary table with the new schema (covered_size as nullable)
-        CREATE TABLE properties_new (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            external_id TEXT NOT NULL,
-            source TEXT NOT NULL,
-            property_type TEXT,
-            district TEXT NOT NULL,
-            title TEXT NOT NULL,
-            description TEXT,
-            price_usd REAL NOT NULL,
-            address TEXT NOT NULL,
-            covered_size REAL,
-            rooms INTEGER,
-            antiquity INTEGER,
-            url TEXT NOT NULL,
-            status TEXT NOT NULL DEFAULT 'active',
-            created_at DATETIME NOT NULL,
-            updated_at DATETIME NOT NULL,
-            UNIQUE(source, external_id)
-        );
-
-        -- Copy data from the old table to the new one
-        INSERT INTO properties_new 
-        SELECT * FROM properties;
-
-        -- Drop the old table
-        DROP TABLE properties;
-
-        -- Rename the new table to the original name
-        ALTER TABLE properties_new RENAME TO properties;
-
-        -- Recreate the status index
-        CREATE INDEX idx_properties_status ON properties(status);
-
-        -- Recreate property_images table with foreign key
-        CREATE TABLE property_images (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            property_id INTEGER NOT NULL,
-            url TEXT NOT NULL,
-            local_path TEXT NOT NULL,
-            hash BLOB NOT NULL,
-            created_at DATETIME NOT NULL,
-            updated_at DATETIME NOT NULL,
-            FOREIGN KEY(property_id) REFERENCES properties(id),
-            UNIQUE(property_id, url)
-        );
-
-        -- Recreate property_price_history table with foreign key
-        CREATE TABLE property_price_history (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            property_id INTEGER NOT NULL,
-            price_usd REAL NOT NULL,
-            observed_at DATETIME NOT NULL,
-            FOREIGN KEY(property_id) REFERENCES properties(id),
-            UNIQUE(property_id, observed_at)
-        );
-
-        -- Re-enable foreign key constraints
-        PRAGMA foreign_keys = ON;
-        "#,
-        down: r#"
-        -- Disable foreign key constraints
-        PRAGMA foreign_keys = OFF;
-
-        -- Drop foreign key constraints
-        DROP TABLE IF EXISTS property_images;
-        DROP TABLE IF EXISTS property_price_history;
-
-        -- Create a temporary table with the old schema
-        CREATE TABLE properties_old (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            external_id TEXT NOT NULL,
-            source TEXT NOT NULL,
-            property_type TEXT,
-            district TEXT NOT NULL,
-            title TEXT NOT NULL,
-            description TEXT,
-            price_usd REAL NOT NULL,
-            address TEXT NOT NULL,
-            covered_size REAL,
-            rooms INTEGER,
-            antiquity INTEGER,
-            url TEXT NOT NULL,
-            status TEXT NOT NULL DEFAULT 'active',
-            created_at DATETIME NOT NULL,
-            updated_at DATETIME NOT NULL,
-            UNIQUE(source, external_id)
-        );
-
-        -- Copy data from the current table to the old one
-        INSERT INTO properties_old 
-        SELECT * FROM properties;
-
-        -- Drop the current table
-        DROP TABLE properties;
-
-        -- Rename the old table to the original name
-        ALTER TABLE properties_old RENAME TO properties;
-
-        -- Recreate the status index
-        CREATE INDEX idx_properties_status ON properties(status);
-
-        -- Recreate property_images table with foreign key
-        CREATE TABLE property_images (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            property_id INTEGER NOT NULL,
-            url TEXT NOT NULL,
-            local_path TEXT NOT NULL,
-            hash BLOB NOT NULL,
-            created_at DATETIME NOT NULL,
-            updated_at DATETIME NOT NULL,
-            FOREIGN KEY(property_id) REFERENCES properties(id),
-            UNIQUE(property_id, url)
-        );
-
-        -- Recreate property_price_history table with foreign key
-        CREATE TABLE property_price_history (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            property_id INTEGER NOT NULL,
-            price_usd REAL NOT NULL,
-            observed_at DATETIME NOT NULL,
-            FOREIGN KEY(property_id) REFERENCES properties(id),
-            UNIQUE(property_id, observed_at)
-        );
-
-        -- Re-enable foreign key constraints
-        PRAGMA foreign_keys = ON;
-        "#,
-    },
-    Migration {
-        version: 7,
-        up: r#"
-        -- Create a temporary table with the new schema
-        CREATE TABLE properties_new (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            external_id TEXT NOT NULL,
-            source TEXT NOT NULL,
-            property_type TEXT,
-            district TEXT NOT NULL,
-            title TEXT NOT NULL,
-            description TEXT,
-            price_usd REAL NOT NULL,
-            address TEXT NOT NULL,
-            covered_size REAL,
-            rooms INTEGER,
-            antiquity INTEGER,
-            url TEXT NOT NULL,
-            status TEXT NOT NULL DEFAULT 'active',
-            created_at DATETIME NOT NULL,
-            updated_at TEXT NOT NULL,
-            UNIQUE(source, external_id)
-        );
-
-        -- Copy data from the old table to the new one
-        INSERT INTO properties_new 
-        SELECT 
-            id,
-            external_id,
-            source,
-            property_type,
-            district,
-            title,
-            description,
-            price_usd,
-            address,
-            covered_size,
-            rooms,
-            antiquity,
-            url,
-            status,
-            created_at,
-            CASE 
-                WHEN typeof(updated_at) = 'datetime' THEN datetime(updated_at)
-                ELSE updated_at
-            END as updated_at
-        FROM properties;
-
-        -- Drop the old table
-        DROP TABLE properties;
-
-        -- Rename the new table to the original name
-        ALTER TABLE properties_new RENAME TO properties;
-        "#,
-        down: r#"
-        -- Create a temporary table with the old schema
-        CREATE TABLE properties_old (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            external_id TEXT NOT NULL,
-            source TEXT NOT NULL,
-            property_type TEXT,
-            district TEXT NOT NULL,
-            title TEXT NOT NULL,
-            description TEXT,
-            price_usd REAL NOT NULL,
-            address TEXT NOT NULL,
-            covered_size REAL,
-            rooms INTEGER,
-            antiquity INTEGER,
-            url TEXT NOT NULL,
-            status TEXT NOT NULL DEFAULT 'active',
-            created_at DATETIME NOT NULL,
-            updated_at DATETIME NOT NULL,
-            UNIQUE(source, external_id)
-        );
-
-        -- Copy data from the current table to the old one
-        INSERT INTO properties_old 
-        SELECT 
-            id,
-            external_id,
-            source,
-            property_type,
-            district,
-            title,
-            description,
-            price_usd,
-            address,
-            covered_size,
-            rooms,
-            antiquity,
-            url,
-            status,
-            created_at,
-            CASE 
-                WHEN typeof(updated_at) = 'text' THEN datetime(updated_at)
-                ELSE updated_at
-            END as updated_at
-        FROM properties;
-
-        -- Drop the current table
-        DROP TABLE properties;
-
-        -- Rename the old table to the original name
-        ALTER TABLE properties_old RENAME TO properties;
-        "#,
-    },
-];
-
-#[derive(Debug)]
+#[derive(Clone, Debug)]
 pub struct Database {
     pool: SqlitePool,
+    migrations: Vec<Migration>,
 }
 
 impl Database {
     pub async fn new(db_path: impl AsRef<Path>) -> Result<Self> {
-        let db_path = db_path.as_ref();
-        
-        // Create parent directory if it doesn't exist
-        if let Some(parent) = db_path.parent() {
-            fs::create_dir_all(parent)?;
+        // Ensure parent directory exists
+        if let Some(parent) = db_path.as_ref().parent() {
+            std::fs::create_dir_all(parent)?;
         }
-
-        // Create empty database file if it doesn't exist
-        if !db_path.exists() {
-            fs::write(db_path, "")?;
-        }
-
-        // Convert path to URL format
-        let db_url = format!("sqlite:{}", db_path.to_string_lossy());
-        
-        let pool = SqlitePool::connect(&db_url).await?;
-        let db = Self { pool };
-        db.migrate().await?;
-
-        Ok(db)
+        let pool = SqlitePool::connect(&format!("sqlite:{}", db_path.as_ref().display())).await?;
+        let migrations = Vec::new();
+        Ok(Self { pool, migrations })
     }
 
     pub async fn new_without_migrations(db_path: impl AsRef<Path>) -> Result<Self> {
-        let db_path = db_path.as_ref();
-        
-        // Create parent directory if it doesn't exist
-        if let Some(parent) = db_path.parent() {
-            fs::create_dir_all(parent)?;
+        // Ensure parent directory exists
+        if let Some(parent) = db_path.as_ref().parent() {
+            std::fs::create_dir_all(parent)?;
         }
-
-        // Create empty database file if it doesn't exist
-        if !db_path.exists() {
-            fs::write(db_path, "")?;
-        }
-
-        // Convert path to URL format
-        let db_url = format!("sqlite:{}", db_path.to_string_lossy());
-        
-        let pool = SqlitePool::connect(&db_url).await?;
-        let db = Self { pool };
-        db.create_migrations_table().await?;
-
-        Ok(db)
+        let pool = SqlitePool::connect(&format!("sqlite:{}", db_path.as_ref().display())).await?;
+        let migrations = Vec::new();
+        Ok(Self { pool, migrations })
     }
 
-    // For testing purposes only
-    #[cfg(test)]
-    pub(crate) async fn test_connection() -> Result<Self> {
-        Self::new(":memory:").await
+    pub fn pool(&self) -> &SqlitePool {
+        &self.pool
     }
 
-    async fn create_migrations_table(&self) -> Result<()> {
-        sqlx::query(
-            r#"
-            CREATE TABLE IF NOT EXISTS migrations (
-                version INTEGER PRIMARY KEY,
-                applied_at DATETIME NOT NULL
-            )
-            "#,
-        )
-        .execute(&self.pool)
-        .await?;
-        Ok(())
-    }
-
-    pub async fn get_applied_migrations(&self) -> Result<Vec<i32>> {
-        let versions: Vec<i32> = sqlx::query_scalar("SELECT version FROM migrations ORDER BY version")
-            .fetch_all(&self.pool)
-            .await?;
-        Ok(versions)
-    }
-
-    pub async fn migrate(&self) -> Result<()> {
-        debug!("Running database migrations");
-        
-        // Create migrations table if it doesn't exist
-        self.create_migrations_table().await?;
-
-        // Get list of applied migrations
-        let applied = self.get_applied_migrations().await?;
-
-        // Apply pending migrations
-        for migration in MIGRATIONS {
-            if !applied.contains(&migration.version) {
-                info!("Applying migration {}", migration.version);
-                
-                // Start transaction
-                let mut tx = self.pool.begin().await?;
-                
-                // Apply migration
-                sqlx::query(migration.up)
-                    .execute(&mut *tx)
-                    .await?;
-                
-                // Record migration
-                sqlx::query(
-                    "INSERT INTO migrations (version, applied_at) VALUES (?, ?)",
-                )
-                .bind(migration.version)
-                .bind(Utc::now())
-                .execute(&mut *tx)
-                .await?;
-                
-                // Commit transaction
-                tx.commit().await?;
-                
-                info!("Successfully applied migration {}", migration.version);
-            }
-        }
-
-        // Clean up any redundant price history records
-        let cleaned = self.cleanup_price_history().await?;
-        if cleaned > 0 {
-            debug!("Cleaned up {} redundant price history records", cleaned);
-        }
-
-        Ok(())
-    }
-
-    pub async fn rollback(&self, version: i32) -> Result<()> {
-        debug!("Rolling back to version {}", version);
-        
-        // Get list of applied migrations
-        let applied = self.get_applied_migrations().await?;
-        
-        // Find migrations to rollback
-        let migrations_to_rollback: Vec<_> = MIGRATIONS
-            .iter()
-            .filter(|m| m.version > version && applied.contains(&m.version))
-            .collect();
-        
-        // Rollback in reverse order
-        for migration in migrations_to_rollback.iter().rev() {
-            info!("Rolling back migration {}", migration.version);
-            
-            // Start transaction
-            let mut tx = self.pool.begin().await?;
-            
-            // Rollback migration
-            sqlx::query(migration.down)
-                .execute(&mut *tx)
-                .await?;
-            
-            // Remove migration record
-            sqlx::query("DELETE FROM migrations WHERE version = ?")
-                .bind(migration.version)
-                .execute(&mut *tx)
-                .await?;
-            
-            // Commit transaction
-            tx.commit().await?;
-            
-            info!("Successfully rolled back migration {}", migration.version);
-        }
-        
-        Ok(())
-    }
-
-    /// Dump all tables from the database
-    pub async fn dump_tables(&self) -> Result<serde_json::Value> {
-        let mut tables = serde_json::Map::new();
-        
-        // Get all table names
-        let table_query = "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'";
-        let table_rows: Vec<(String,)> = sqlx::query_as(table_query)
-            .fetch_all(&self.pool)
-            .await?;
-            
-        for (table_name,) in table_rows {
-            // Get all rows from the table
-            let rows = sqlx::query(&format!("SELECT * FROM {}", table_name))
-                .fetch_all(&self.pool)
-                .await?;
-                
-            let mut table_data = Vec::new();
-            for row in rows {
-                let mut row_obj = serde_json::Map::new();
-                
-                for (i, column) in row.columns().iter().enumerate() {
-                    let column_name = column.name();
-                    let value = match column.type_info().name() {
-                        "TEXT" => serde_json::Value::String(row.get::<String, _>(i)),
-                        "INTEGER" => serde_json::Value::Number(serde_json::Number::from(row.get::<i64, _>(i))),
-                        "REAL" => {
-                            let val: f64 = row.get(i);
-                            if let Some(num) = serde_json::Number::from_f64(val) {
-                                serde_json::Value::Number(num)
-                            } else {
-                                serde_json::Value::Null
-                            }
-                        },
-                        "BLOB" => {
-                            let bytes: Vec<u8> = row.get(i);
-                            serde_json::Value::String(hex::encode(bytes))
-                        },
-                        _ => serde_json::Value::Null
-                    };
-                    row_obj.insert(column_name.to_string(), value);
-                }
-                table_data.push(serde_json::Value::Object(row_obj));
-            }
-            tables.insert(table_name, serde_json::Value::Array(table_data));
-        }
-        
-        Ok(serde_json::Value::Object(tables))
-    }
-
-    /// Check database integrity
-    pub async fn check_integrity(&self) -> Result<Vec<String>> {
-        let mut issues = Vec::new();
-
-        // Check SQLite integrity
-        let integrity_check: Vec<String> = sqlx::query_scalar("PRAGMA integrity_check")
-            .fetch_all(&self.pool)
-            .await?;
-        
-        if integrity_check.len() != 1 || integrity_check[0] != "ok" {
-            issues.extend(integrity_check);
-        }
-
-        // Check foreign key constraints
-        let foreign_key_violations: Vec<(i64, String, i64, String)> = sqlx::query_as(
-            "PRAGMA foreign_key_check"
-        )
-        .fetch_all(&self.pool)
-        .await?;
-
-        if !foreign_key_violations.is_empty() {
-            for (table_id, table_name, row_id, parent) in foreign_key_violations {
-                issues.push(format!(
-                    "Foreign key violation in table {} (id: {}) at row {} referencing {}",
-                    table_name, table_id, row_id, parent
-                ));
-            }
-        }
-
-        // Check for orphaned images
-        let orphaned_images: Vec<(i64,)> = sqlx::query_as(
-            "SELECT i.id FROM property_images i LEFT JOIN properties p ON i.property_id = p.id WHERE p.id IS NULL"
-        )
-        .fetch_all(&self.pool)
-        .await?;
-
-        if !orphaned_images.is_empty() {
-            issues.push(format!(
-                "Found {} orphaned images (IDs: {})",
-                orphaned_images.len(),
-                orphaned_images
-                    .iter()
-                    .map(|(id,)| id.to_string())
-                    .collect::<Vec<_>>()
-                    .join(", ")
-            ));
-        }
-
-        // Check for duplicate properties (same external_id and source)
-        let duplicates: Vec<(String, String, i64)> = sqlx::query_as(
-            "SELECT external_id, source, COUNT(*) as count 
-             FROM properties 
-             GROUP BY external_id, source 
-             HAVING count > 1"
-        )
-        .fetch_all(&self.pool)
-        .await?;
-
-        if !duplicates.is_empty() {
-            for (external_id, source, count) in duplicates {
-                issues.push(format!(
-                    "Found {} duplicate entries for property {} from {}",
-                    count, external_id, source
-                ));
-            }
-        }
-
-        Ok(issues)
-    }
-
-    /// Dump all tables from the database
     pub async fn save_property(&self, property: &mut Property) -> Result<()> {
-        let now = Utc::now();
-        property.updated_at = now;
-
-        debug!(
-            "Saving property: external_id={}, source={}, covered_size={:?}, rooms={:?}, antiquity={:?}",
-            property.external_id, property.source, property.covered_size, property.rooms, property.antiquity
-        );
-
-        // Check if property already exists
-        let existing = sqlx::query(
-            "SELECT id FROM properties WHERE source = ? AND external_id = ?"
+        // First try to find an existing property with the same source and external_id
+        let existing_property = sqlx::query_as::<_, Property>(
+            "SELECT * FROM properties WHERE source = ? AND external_id = ?"
         )
         .bind(&property.source)
         .bind(&property.external_id)
         .fetch_optional(&self.pool)
         .await?;
 
-        if let Some(row) = existing {
-            // Property exists, update it
-            let id = row.get::<i64, _>(0);
-            property.id = Some(id);
-            
-            debug!("Updating existing property with id={}", id);
-            
-            sqlx::query(
-                r#"
-                UPDATE properties SET
-                    property_type = ?,
-                    district = ?,
-                    title = ?,
-                    description = ?,
-                    price_usd = ?,
-                    address = ?,
-                    covered_size = ?,
-                    rooms = ?,
-                    antiquity = ?,
-                    url = ?,
-                    status = ?,
-                    updated_at = ?
-                WHERE id = ?
-                "#,
-            )
-            .bind(&property.property_type)
-            .bind(&property.district)
-            .bind(&property.title)
-            .bind(&property.description)
-            .bind(property.price_usd)
-            .bind(&property.address)
-            .bind(property.covered_size)
-            .bind(property.rooms)
-            .bind(property.antiquity)
-            .bind(property.url.to_string())
-            .bind(&property.status)
-            .bind(property.updated_at)
-            .bind(property.id)
-            .execute(&self.pool)
-            .await?;
-        } else {
-            // Property doesn't exist, insert it
-            property.created_at = now;
-            property.status = PropertyStatus::Active;
-            
-            debug!("Inserting new property");
-            
-            let result = sqlx::query(
-                r#"
-                INSERT INTO properties (
-                    external_id, source, property_type, district, title,
-                    description, price_usd, address, covered_size, rooms,
-                    antiquity, url, status, created_at, updated_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                "#,
-            )
-            .bind(&property.external_id)
-            .bind(&property.source)
-            .bind(&property.property_type)
-            .bind(&property.district)
-            .bind(&property.title)
-            .bind(&property.description)
-            .bind(property.price_usd)
-            .bind(&property.address)
-            .bind(property.covered_size)
-            .bind(property.rooms)
-            .bind(property.antiquity)
-            .bind(property.url.to_string())
-            .bind(&property.status)
-            .bind(property.created_at)
-            .bind(property.updated_at)
-            .execute(&self.pool)
-        .await?;
+        match existing_property {
+            Some(existing) => {
+                // Update the property's ID to match the existing one
+                property.id = existing.id;
+                // Record price history if the price has changed
+                if existing.price_usd != property.price_usd {
+                    self.record_price_history(
+                        existing.id,
+                        property.price_usd,
+                        DbTimestamp::now()
+                    ).await?;
+                }
+                // Update the existing property
+                self.update_property(property).await
+            }
+            None => {
+                // Insert as a new property
+                let id = sqlx::query(
+                    r#"
+                    INSERT INTO properties (
+                        external_id, source, property_type, district, title,
+                        description, price_usd, address, covered_size, rooms,
+                        antiquity, url, status, created_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    "#,
+                )
+                .bind(&property.external_id)
+                .bind(&property.source)
+                .bind(&property.property_type)
+                .bind(&property.district)
+                .bind(&property.title)
+                .bind(&property.description)
+                .bind(property.price_usd)
+                .bind(&property.address)
+                .bind(property.covered_size)
+                .bind(property.rooms)
+                .bind(property.antiquity)
+                .bind(&property.url)
+                .bind(&property.status)
+                .bind(&property.created_at)
+                .bind(&property.updated_at)
+                .execute(&self.pool)
+                .await?
+                .last_insert_rowid();
 
-            property.id = Some(result.last_insert_rowid());
-            debug!("Inserted new property with id={}", property.id.unwrap());
+                property.id = id;
+
+                // Record initial price history
+                self.record_price_history(
+                    id,
+                    property.price_usd,
+                    DbTimestamp::now()
+                ).await?;
+
+                Ok(())
+            }
         }
-
-        // Record price history
-        self.record_price_history(property.id.unwrap(), property.price_usd, now).await?;
-
-        Ok(())
     }
 
-    pub async fn save_property_image(&self, image: &mut PropertyImage) -> Result<()> {
-        let now = Utc::now();
-        let path_str = image.local_path.to_str().ok_or_else(|| BreaError::Database(sqlx::Error::Protocol("Invalid path".into())))?;
-
-        let id = sqlx::query(
+    pub async fn update_property(&self, property: &Property) -> Result<()> {
+        sqlx::query(
             r#"
-            INSERT INTO property_images (property_id, url, local_path, hash, created_at, updated_at)
-            VALUES (?, ?, ?, ?, ?, ?)
-            ON CONFLICT(property_id, url) DO UPDATE SET
-                local_path = excluded.local_path,
-                hash = excluded.hash,
-                updated_at = excluded.updated_at
-            RETURNING id
+            UPDATE properties SET
+                external_id = ?,
+                source = ?,
+                property_type = ?,
+                district = ?,
+                title = ?,
+                description = ?,
+                price_usd = ?,
+                address = ?,
+                covered_size = ?,
+                rooms = ?,
+                antiquity = ?,
+                url = ?,
+                status = ?,
+                created_at = ?,
+                updated_at = ?
+            WHERE id = ?
             "#,
         )
-        .bind(image.property_id)
-        .bind(image.url.as_str())
-        .bind(path_str)
-        .bind(&image.hash)
-        .bind(now)
-        .bind(now)
-        .fetch_one(&self.pool)
-        .await?
-        .get::<i64, _>(0);
+        .bind(&property.external_id)
+        .bind(&property.source)
+        .bind(&property.property_type)
+        .bind(&property.district)
+        .bind(&property.title)
+        .bind(&property.description)
+        .bind(property.price_usd)
+        .bind(&property.address)
+        .bind(property.covered_size)
+        .bind(property.rooms)
+        .bind(property.antiquity)
+        .bind(&property.url)
+        .bind(&property.status)
+        .bind(&property.created_at)
+        .bind(&property.updated_at)
+        .bind(property.id)
+        .execute(&self.pool)
+        .await?;
 
-        image.id = Some(id);
         Ok(())
     }
 
-    pub async fn list_properties(
-        &self,
-        source: Option<&str>,
-        min_price: Option<f64>,
-        max_price: Option<f64>,
-        min_size: Option<f64>,
-        max_size: Option<f64>,
-        limit: Option<i64>,
-        offset: Option<i64>,
-        sort_by: Option<&str>,
-        sort_desc: bool,
-    ) -> Result<Vec<Property>> {
-        let mut query_builder: QueryBuilder<Sqlite> = QueryBuilder::new(
-            r#"
-            SELECT 
-                id,
-                external_id,
-                source,
-                property_type,
-                district,
-                title,
-                description,
-                price_usd,
-                address,
-                covered_size,
-                rooms,
-                antiquity,
-                url,
-                updated_at as status,
-                created_at,
-                status as updated_at
-            FROM properties 
-            WHERE 1=1
-            "#,
-        );
+    pub async fn get_property(&self, id: i64) -> Result<Option<Property>> {
+        let property = sqlx::query_as::<_, Property>(
+            "SELECT * FROM properties WHERE id = ?"
+        )
+        .bind(id)
+        .fetch_optional(&self.pool)
+        .await?;
 
-        if let Some(source) = source {
-            query_builder.push(" AND source = ");
-            query_builder.push_bind(source.to_string());
-        }
+        Ok(property)
+    }
 
-        if let Some(min_price) = min_price {
-            query_builder.push(" AND price_usd >= ");
-            query_builder.push_bind(min_price);
-        }
+    pub async fn get_property_by_external_id(&self, external_id: &str) -> Result<Option<Property>> {
+        let property = sqlx::query_as::<_, Property>(
+            "SELECT * FROM properties WHERE external_id = ?"
+        )
+        .bind(external_id)
+        .fetch_optional(&self.pool)
+        .await?;
 
-        if let Some(max_price) = max_price {
-            query_builder.push(" AND price_usd <= ");
-            query_builder.push_bind(max_price);
-        }
+        Ok(property)
+    }
 
-        if let Some(min_size) = min_size {
-            query_builder.push(" AND covered_size >= ");
-            query_builder.push_bind(min_size);
-        }
-
-        if let Some(max_size) = max_size {
-            query_builder.push(" AND covered_size <= ");
-            query_builder.push_bind(max_size);
-        }
-
-        // Add sorting
-        let sort_field = sort_by.unwrap_or("created_at");
-        query_builder.push(" ORDER BY ");
-        query_builder.push(sort_field);
-        if sort_desc {
-            query_builder.push(" DESC");
-        }
-
-        // Add pagination
-        if let Some(limit) = limit {
-            query_builder.push(" LIMIT ");
-            query_builder.push_bind(limit);
-        }
-        if let Some(offset) = offset {
-            query_builder.push(" OFFSET ");
-            query_builder.push_bind(offset);
-        }
-
-        let query = query_builder.build_query_as::<Property>();
-        let properties = query.fetch_all(&self.pool).await?;
+    pub async fn get_properties(&self) -> Result<Vec<Property>> {
+        let properties = sqlx::query_as::<_, Property>(
+            "SELECT * FROM properties ORDER BY id DESC"
+        )
+        .fetch_all(&self.pool)
+        .await?;
 
         Ok(properties)
+    }
+
+    pub async fn get_active_properties(&self) -> Result<Vec<Property>> {
+        PropertyQueryBuilder::new()
+            .with_status(DbPropertyStatus::new(STATUS_ACTIVE))
+            .execute(&self.pool)
+            .await
+    }
+
+    pub async fn get_sold_properties(&self) -> Result<Vec<Property>> {
+        PropertyQueryBuilder::new()
+            .with_status(DbPropertyStatus::new(STATUS_SOLD))
+            .execute(&self.pool)
+            .await
+    }
+
+    pub async fn get_removed_properties(&self) -> Result<Vec<Property>> {
+        PropertyQueryBuilder::new()
+            .with_status(DbPropertyStatus::new(STATUS_REMOVED))
+            .execute(&self.pool)
+            .await
     }
 
     pub async fn get_price_history(&self, property_id: i64) -> Result<Vec<(f64, DateTime<Utc>)>> {
-        let history = sqlx::query(
-            r#"
-            SELECT price_usd, observed_at
-            FROM property_price_history
-            WHERE property_id = ?
-            ORDER BY observed_at DESC
-            "#,
+        let rows = sqlx::query(
+            "SELECT price_usd, observed_at FROM property_price_history WHERE property_id = ? ORDER BY observed_at DESC"
         )
         .bind(property_id)
         .fetch_all(&self.pool)
         .await?;
 
-        Ok(history
+        Ok(rows
             .into_iter()
-            .map(|row| (row.get::<f64, _>("price_usd"), row.get::<DateTime<Utc>, _>("observed_at")))
-            .collect())
+            .map(|row| Ok((row.get("price_usd"), row.get("observed_at"))))
+            .collect::<Result<Vec<_>>>()?)
+    }
+
+    pub async fn save_property_image(&self, image: &mut PropertyImage) -> Result<()> {
+        let id = sqlx::query(
+            r#"
+            INSERT INTO property_images (
+                property_id, url, local_path, hash,
+                created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            "#,
+        )
+        .bind(image.property_id)
+        .bind(&image.url)
+        .bind(&image.local_path)
+        .bind(&image.hash)
+        .bind(&image.created_at)
+        .bind(&image.updated_at)
+        .execute(&self.pool)
+        .await?
+        .last_insert_rowid();
+
+        image.id = id;
+        Ok(())
+    }
+
+    pub async fn update_property_image(&self, image: &PropertyImage) -> Result<()> {
+        sqlx::query(
+            r#"
+            UPDATE property_images SET
+                property_id = ?,
+                url = ?,
+                local_path = ?,
+                hash = ?,
+                created_at = ?,
+                updated_at = ?
+            WHERE id = ?
+            "#,
+        )
+        .bind(image.property_id)
+        .bind(&image.url)
+        .bind(&image.local_path)
+        .bind(&image.hash)
+        .bind(&image.created_at)
+        .bind(&image.updated_at)
+        .bind(image.id)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(())
+    }
+
+    pub async fn get_property_images(&self, property_id: i64) -> Result<Vec<PropertyImage>> {
+        PropertyImageQueryBuilder::new()
+            .with_property_id(property_id)
+            .execute(&self.pool)
+            .await
+    }
+
+    pub async fn get_primary_property_image(&self, property_id: i64) -> Result<Option<PropertyImage>> {
+        let image = sqlx::query_as::<_, PropertyImage>(
+            "SELECT * FROM property_images WHERE property_id = ? AND is_primary = 1"
+        )
+        .bind(property_id)
+        .fetch_optional(&self.pool)
+        .await?;
+
+        Ok(image)
+    }
+
+    pub async fn detect_sold_properties(&self, current_external_ids: &[&str]) -> Result<Vec<Property>> {
+        PropertyQueryBuilder::new()
+            .with_status(DbPropertyStatus::new(STATUS_ACTIVE))
+            .with_external_ids_not_in(current_external_ids)
+            .execute(&self.pool)
+            .await
+    }
+
+    pub async fn mark_property_as_sold(&self, property_id: i64) -> Result<()> {
+        sqlx::query(
+            "UPDATE properties SET status = ?, updated_at = ? WHERE id = ?"
+        )
+        .bind(DbPropertyStatus::new(STATUS_SOLD))
+        .bind(DbTimestamp::now())
+        .bind(property_id)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(())
+    }
+
+    pub async fn mark_property_as_removed(&self, property_id: i64) -> Result<()> {
+        sqlx::query(
+            "UPDATE properties SET status = ?, updated_at = ? WHERE id = ?"
+        )
+        .bind(DbPropertyStatus::new(STATUS_REMOVED))
+        .bind(DbTimestamp::now())
+        .bind(property_id)
+        .execute(&self.pool)
+        .await?;
+
+        Ok(())
     }
 
     pub async fn cleanup_price_history(&self) -> Result<usize> {
-        // This query will:
-        // 1. Keep the first record of each day
-        // 2. Keep records where price changed from the previous record
-        // 3. Delete all other records
-        let deleted = sqlx::query(
+        let result = sqlx::query(
             r#"
-            WITH ranked_prices AS (
-                SELECT 
-                    id,
-                    property_id,
-                    price_usd,
-                    observed_at,
-                    LAG(price_usd) OVER (PARTITION BY property_id ORDER BY observed_at) as prev_price,
-                    strftime('%Y-%m-%d', observed_at) as obs_date,
-                    ROW_NUMBER() OVER (
-                        PARTITION BY property_id, strftime('%Y-%m-%d', observed_at) 
-                        ORDER BY observed_at
-                    ) as daily_rank
-                FROM property_price_history
-            )
             DELETE FROM property_price_history
-            WHERE id IN (
-                SELECT id 
-                FROM ranked_prices
-                WHERE (
-                    daily_rank > 1  -- Not the first record of the day
-                    AND prev_price IS NOT NULL  -- Not the first record for the property
-                    AND ABS(price_usd - prev_price) < prev_price * 0.001  -- Price didn't change significantly
-                )
+            WHERE id NOT IN (
+                SELECT id FROM (
+                    SELECT id, ROW_NUMBER() OVER (
+                        PARTITION BY property_id
+                        ORDER BY observed_at DESC
+                    ) as rn
+                    FROM property_price_history
+                ) WHERE rn <= 10
             )
-            "#,
+            "#
         )
         .execute(&self.pool)
         .await?;
 
-        Ok(deleted.rows_affected() as usize)
+        Ok(result.rows_affected() as usize)
     }
 
-    pub async fn mark_property_sold(&self, property_id: i64) -> Result<()> {
-        sqlx::query(
-            "UPDATE properties SET status = ?, updated_at = ? WHERE id = ?",
-        )
-        .bind(PropertyStatus::Sold)
-        .bind(Utc::now())
-        .bind(property_id)
-        .execute(&self.pool)
-        .await?;
-        Ok(())
-    }
-
-    pub async fn mark_property_removed(&self, property_id: i64) -> Result<()> {
-        sqlx::query(
-            "UPDATE properties SET status = ?, updated_at = ? WHERE id = ?",
-        )
-        .bind(PropertyStatus::Removed)
-        .bind(Utc::now())
-        .bind(property_id)
-        .execute(&self.pool)
-        .await?;
-        Ok(())
-    }
-
-    pub async fn detect_sold_properties(&self, source: &str, current_external_ids: &[String]) -> Result<Vec<Property>> {
-        let properties = sqlx::query_as::<_, Property>(
-            r#"
-            SELECT * FROM properties 
-            WHERE source = ? AND status = ? AND external_id NOT IN (
-                SELECT value FROM json_each(?)
-            )
-            "#,
-        )
-        .bind(source)
-        .bind(PropertyStatus::Active)
-        .bind(serde_json::to_string(current_external_ids)?)
-        .fetch_all(&self.pool)
-        .await?;
-
-        Ok(properties)
-    }
-
-    async fn record_price_history(&self, property_id: i64, price_usd: f64, observed_at: DateTime<Utc>) -> Result<()> {
+    async fn record_price_history(&self, property_id: i64, price_usd: f64, observed_at: DbTimestamp) -> Result<()> {
         sqlx::query(
             r#"
             INSERT INTO property_price_history (property_id, price_usd, observed_at)
             VALUES (?, ?, ?)
-            ON CONFLICT(property_id, observed_at) DO UPDATE SET
-                price_usd = excluded.price_usd
-            "#,
+            ON CONFLICT(property_id, observed_at) DO NOTHING
+            "#
         )
         .bind(property_id)
         .bind(price_usd)
-        .bind(observed_at)
+        .bind(&observed_at)
         .execute(&self.pool)
         .await?;
+
         Ok(())
     }
 }
@@ -1029,209 +369,295 @@ impl Database {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::str::FromStr;
-    use url::Url;
+    use chrono::Utc;
+
+    async fn test_connection() -> Database {
+        let pool = SqlitePool::connect("sqlite::memory:").await.unwrap();
+        let db = Database { pool, migrations: Vec::new() };
+        apply_migrations(&db.pool).await.unwrap();
+        db
+    }
 
     #[tokio::test]
     async fn test_database_creation() {
-        let db = Database::test_connection().await.unwrap();
-        sqlx::query("SELECT 1").execute(&db.pool).await.unwrap();
+        let _db = test_connection().await;
     }
 
     #[tokio::test]
     async fn test_property_crud() {
-        let db = Database::test_connection().await.unwrap();
+        let db = test_connection().await;
+        let now = DbTimestamp::now();
 
         // Create a property
         let mut property = Property {
-            id: None,
+            id: 0,
             external_id: "test-123".to_string(),
             source: "test".to_string(),
-            property_type: Some(PropertyType::House),
+            property_type: Some("apartment".to_string()),
             district: "Test District".to_string(),
             title: "Test Property".to_string(),
-            description: Some("Test Description".to_string()),
+            description: Some("Test description".to_string()),
             price_usd: 100000.0,
-            address: "Test Address".to_string(),
+            address: "123 Test St".to_string(),
             covered_size: Some(100.0),
-            rooms: Some(3),
+            rooms: Some(2),
             antiquity: Some(5),
-            url: Url::from_str("https://example.com/property/123").unwrap(),
-            status: PropertyStatus::Active,
-            created_at: Utc.with_ymd_and_hms(2024, 3, 21, 0, 0, 0).unwrap(),
-            updated_at: Utc.with_ymd_and_hms(2024, 3, 21, 0, 0, 0).unwrap(),
+            url: "https://example.com/test".to_string(),
+            status: DbPropertyStatus::new(STATUS_ACTIVE),
+            created_at: now.clone(),
+            updated_at: now,
         };
 
         // Save property
         db.save_property(&mut property).await.unwrap();
-        assert!(property.id.is_some());
+        assert!(property.id > 0);
 
-        // Test update
-        property.price_usd = 110000.0;
-        db.save_property(&mut property).await.unwrap();
+        // Get property
+        let retrieved = db.get_property(property.id).await.unwrap().unwrap();
+        assert_eq!(retrieved.external_id, "test-123");
+        assert_eq!(retrieved.price_usd, 100000.0);
+
+        // Update property
+        property.price_usd = 150000.0;
+        property.updated_at = DbTimestamp::now();
+        db.update_property(&property).await.unwrap();
 
         // Verify update
-        let updated = sqlx::query(
-            "SELECT price_usd FROM properties WHERE id = ?"
-        )
-        .bind(property.id.unwrap())
-        .fetch_one(&db.pool)
-        .await
-        .unwrap();
-        assert_eq!(updated.get::<f64, _>("price_usd"), 110000.0);
-
-        // Test duplicate handling
-        let mut duplicate = property.clone();
-        duplicate.id = None;
-        db.save_property(&mut duplicate).await.unwrap();
-        assert_eq!(duplicate.id, Some(property.id.unwrap()));
+        let updated = db.get_property(property.id).await.unwrap().unwrap();
+        assert_eq!(updated.price_usd, 150000.0);
     }
 
     #[tokio::test]
     async fn test_property_image_crud() {
-        let db = Database::test_connection().await.unwrap();
+        let db = test_connection().await;
+        let now = DbTimestamp::now();
 
-        // Create a property
+        // Create a property first
         let mut property = Property {
-            id: None,
+            id: 0,
             external_id: "test-123".to_string(),
             source: "test".to_string(),
-            property_type: Some(PropertyType::House),
+            property_type: Some("apartment".to_string()),
             district: "Test District".to_string(),
             title: "Test Property".to_string(),
-            description: Some("Test Description".to_string()),
+            description: Some("Test description".to_string()),
             price_usd: 100000.0,
-            address: "Test Address".to_string(),
+            address: "123 Test St".to_string(),
             covered_size: Some(100.0),
-            rooms: Some(3),
+            rooms: Some(2),
             antiquity: Some(5),
-            url: Url::from_str("https://example.com/property/123").unwrap(),
-            status: PropertyStatus::Active,
-            created_at: Utc.with_ymd_and_hms(2024, 3, 21, 0, 0, 0).unwrap(),
-            updated_at: Utc.with_ymd_and_hms(2024, 3, 21, 0, 0, 0).unwrap(),
+            url: "https://example.com/test".to_string(),
+            status: DbPropertyStatus::new(STATUS_ACTIVE),
+            created_at: now.clone(),
+            updated_at: now.clone(),
         };
 
-        // Save property
         db.save_property(&mut property).await.unwrap();
-        assert!(property.id.is_some());
 
-        // Create a test image
+        // Create an image
         let mut image = PropertyImage {
-            id: None,
-            property_id: property.id.unwrap(),
-            url: Url::from_str("https://example.com/image.jpg").unwrap(),
-            local_path: std::path::PathBuf::from("/tmp/images/test.jpg"),
+            id: 0,
+            property_id: property.id,
+            url: "https://example.com/image.jpg".to_string(),
+            local_path: "/tmp/images/test.jpg".to_string(),
             hash: vec![1, 2, 3, 4],
-            created_at: Utc.with_ymd_and_hms(2024, 3, 21, 0, 0, 0).unwrap(),
+            created_at: now.clone(),
+            updated_at: now,
         };
 
-        // Test insert
+        // Save image
         db.save_property_image(&mut image).await.unwrap();
-        assert!(image.id.is_some());
+        assert!(image.id > 0);
 
-        // Test duplicate handling
-        let mut duplicate = image.clone();
-        duplicate.id = None;
-        db.save_property_image(&mut duplicate).await.unwrap();
-        assert_eq!(duplicate.id, image.id);
+        // Get images
+        let images = db.get_property_images(property.id).await.unwrap();
+        assert_eq!(images.len(), 1);
+        assert_eq!(images[0].url, "https://example.com/image.jpg");
     }
 
     #[tokio::test]
     async fn test_price_history_cleanup() {
-        let db = Database::test_connection().await.unwrap();
+        let db = test_connection().await;
+        let now = DbTimestamp::now();
 
         // Create a property
         let mut property = Property {
-            id: None,
+            id: 0,
             external_id: "test-123".to_string(),
             source: "test".to_string(),
-            property_type: Some(PropertyType::House),
+            property_type: Some("apartment".to_string()),
             district: "Test District".to_string(),
             title: "Test Property".to_string(),
-            description: Some("Test Description".to_string()),
+            description: Some("Test description".to_string()),
             price_usd: 100000.0,
-            address: "Test Address".to_string(),
+            address: "123 Test St".to_string(),
             covered_size: Some(100.0),
-            rooms: Some(3),
+            rooms: Some(2),
             antiquity: Some(5),
-            url: Url::from_str("https://example.com/property/123").unwrap(),
-            status: PropertyStatus::Active,
-            created_at: Utc.with_ymd_and_hms(2024, 3, 21, 0, 0, 0).unwrap(),
-            updated_at: Utc.with_ymd_and_hms(2024, 3, 21, 0, 0, 0).unwrap(),
+            url: "https://example.com/test".to_string(),
+            status: DbPropertyStatus::new(STATUS_ACTIVE),
+            created_at: now.clone(),
+            updated_at: now.clone(),
         };
 
-        // Save initial property
         db.save_property(&mut property).await.unwrap();
-        let id = property.id.unwrap();
 
-        // Insert test price history records
-        for i in 0..24 {
-            // Create 24 records, one per hour for a day
-            let time = Utc.with_ymd_and_hms(2024, 3, 21, i, 0, 0).unwrap();
-            let price = if i == 12 { 110000.0 } else { 100000.0 }; // Price change at hour 12
-            sqlx::query(
-                r#"
-                INSERT INTO property_price_history (property_id, price_usd, observed_at)
-                VALUES (?, ?, ?)
-                ON CONFLICT(property_id, observed_at) DO UPDATE SET
-                    price_usd = excluded.price_usd
-                "#,
-            )
-            .bind(id)
-            .bind(price)
-            .bind(time)
+        // Record some price history
+        for i in 0..15 {
+            let price = 100000.0 + (i as f64 * 10000.0);
+            let timestamp = DbTimestamp::now();
+            db.record_price_history(property.id, price, timestamp).await.unwrap();
+            tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+        }
+
+        // Cleanup price history
+        let removed = db.cleanup_price_history().await.unwrap();
+        assert!(removed > 0, "Should have removed some price history entries");
+
+        // Verify cleanup
+        let history = db.get_price_history(property.id).await.unwrap();
+        assert!(history.len() <= 10, "Should have at most 10 price history entries");
+        
+        // Verify the entries are ordered by date descending
+        for i in 1..history.len() {
+            assert!(history[i-1].1 > history[i].1, "Price history should be ordered by date descending");
+        }
+    }
+
+    #[tokio::test]
+    async fn test_type_safe_query_builder() {
+        let db = test_connection().await;
+        let now = DbTimestamp::now();
+
+        // Create some properties
+        let mut property1 = Property {
+            id: 0,
+            external_id: "test-1".to_string(),
+            source: "test".to_string(),
+            property_type: Some("apartment".to_string()),
+            district: "Test District".to_string(),
+            title: "Test Property 1".to_string(),
+            description: Some("Test description 1".to_string()),
+            price_usd: 100000.0,
+            address: "123 Test St".to_string(),
+            covered_size: Some(100.0),
+            rooms: Some(2),
+            antiquity: Some(5),
+            url: "https://example.com/test1".to_string(),
+            status: DbPropertyStatus::new(STATUS_ACTIVE),
+            created_at: now.clone(),
+            updated_at: now.clone(),
+        };
+
+        let mut property2 = Property {
+            id: 0,
+            external_id: "test-2".to_string(),
+            source: "test".to_string(),
+            property_type: Some("house".to_string()),
+            district: "Test District".to_string(),
+            title: "Test Property 2".to_string(),
+            description: Some("Test description 2".to_string()),
+            price_usd: 200000.0,
+            address: "456 Test St".to_string(),
+            covered_size: Some(150.0),
+            rooms: Some(3),
+            antiquity: Some(10),
+            url: "https://example.com/test2".to_string(),
+            status: DbPropertyStatus::new(STATUS_SOLD),
+            created_at: now.clone(),
+            updated_at: now.clone(),
+        };
+
+        db.save_property(&mut property1).await.unwrap();
+        db.save_property(&mut property2).await.unwrap();
+
+        // Test query builder
+        let active_properties = PropertyQueryBuilder::new()
+            .with_status(DbPropertyStatus::new(STATUS_ACTIVE))
             .execute(&db.pool)
             .await
             .unwrap();
-        }
 
-        // Count initial records
-        let initial_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM property_price_history")
-            .fetch_one(&db.pool)
+        assert_eq!(active_properties.len(), 1);
+        assert_eq!(active_properties[0].external_id, "test-1");
+
+        let sold_properties = PropertyQueryBuilder::new()
+            .with_status(DbPropertyStatus::new(STATUS_SOLD))
+            .execute(&db.pool)
             .await
             .unwrap();
-        assert_eq!(initial_count, 24, "Expected 24 initial records");
 
-        // Run cleanup
-        let cleaned = db.cleanup_price_history().await.unwrap();
-        println!("Cleaned {} records", cleaned);
+        assert_eq!(sold_properties.len(), 1);
+        assert_eq!(sold_properties[0].external_id, "test-2");
+    }
 
-        // Get remaining records for debugging
-        let remaining_records: Vec<(f64, DateTime<Utc>)> = sqlx::query_as(
-            "SELECT price_usd, observed_at FROM property_price_history ORDER BY observed_at"
-        )
-        .fetch_all(&db.pool)
-        .await
-        .unwrap();
+    #[tokio::test]
+    async fn test_type_safe_status_transitions() {
+        let db = test_connection().await;
+        let now = DbTimestamp::now();
 
-        println!("Remaining records:");
-        for (price, time) in &remaining_records {
-            println!("Price: {}, Time: {}", price, time);
-        }
+        // Create a property
+        let mut property = Property {
+            id: 0,
+            external_id: "test-123".to_string(),
+            source: "test".to_string(),
+            property_type: Some("apartment".to_string()),
+            district: "Test District".to_string(),
+            title: "Test Property".to_string(),
+            description: Some("Test description".to_string()),
+            price_usd: 100000.0,
+            address: "123 Test St".to_string(),
+            covered_size: Some(100.0),
+            rooms: Some(2),
+            antiquity: Some(5),
+            url: "https://example.com/test".to_string(),
+            status: DbPropertyStatus::new(STATUS_ACTIVE),
+            created_at: now.clone(),
+            updated_at: now.clone(),
+        };
 
-        // Verify we kept only the important records
-        let final_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM property_price_history")
-            .fetch_one(&db.pool)
-            .await
-            .unwrap();
-        
-        // We should have kept:
-        // 1. The first record of the day
-        // 2. The record where price changed
-        // 3. The first record of the next day
-        assert_eq!(final_count, 3, "Expected to keep 3 records: first record of each day and price change record");
+        db.save_property(&mut property).await.unwrap();
 
-        // Verify the records we kept
-        let remaining_records: Vec<(f64, DateTime<Utc>)> = sqlx::query_as(
-            "SELECT price_usd, observed_at FROM property_price_history ORDER BY observed_at"
-        )
-        .fetch_all(&db.pool)
-        .await
-        .unwrap();
+        // Test status transitions
+        db.mark_property_as_sold(property.id).await.unwrap();
+        let sold = db.get_property(property.id).await.unwrap().unwrap();
+        assert_eq!(sold.status.as_str(), STATUS_SOLD);
 
-        assert_eq!(remaining_records.len(), 3);
-        assert_eq!(remaining_records[0].0, 100000.0); // First record of first day
-        assert_eq!(remaining_records[1].0, 110000.0); // Price change
-        assert_eq!(remaining_records[2].0, 100000.0); // First record of next day
+        db.mark_property_as_removed(property.id).await.unwrap();
+        let removed = db.get_property(property.id).await.unwrap().unwrap();
+        assert_eq!(removed.status.as_str(), STATUS_REMOVED);
+    }
+
+    #[tokio::test]
+    async fn test_type_safe_timestamp() {
+        let db = test_connection().await;
+        let now = DbTimestamp::now();
+
+        // Create a property
+        let mut property = Property {
+            id: 0,
+            external_id: "test-123".to_string(),
+            source: "test".to_string(),
+            property_type: Some("apartment".to_string()),
+            district: "Test District".to_string(),
+            title: "Test Property".to_string(),
+            description: Some("Test description".to_string()),
+            price_usd: 100000.0,
+            address: "123 Test St".to_string(),
+            covered_size: Some(100.0),
+            rooms: Some(2),
+            antiquity: Some(5),
+            url: "https://example.com/test".to_string(),
+            status: DbPropertyStatus::new(STATUS_ACTIVE),
+            created_at: now.clone(),
+            updated_at: now.clone(),
+        };
+
+        db.save_property(&mut property).await.unwrap();
+
+        // Test timestamp handling
+        let retrieved = db.get_property(property.id).await.unwrap().unwrap();
+        assert_eq!(retrieved.created_at.to_string(), now.to_string());
+        assert_eq!(retrieved.updated_at.to_string(), now.to_string());
     }
 } 

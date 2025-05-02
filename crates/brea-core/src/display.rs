@@ -1,71 +1,93 @@
-use tabled::{Table, Tabled};
-use tabled::settings::{Style, Width, object::Columns, Modify};
+use chrono::{DateTime, Utc};
+use colored::Colorize;
+use std::fmt;
 
-#[derive(Tabled)]
-pub struct PropertyTableRow {
-    #[tabled(rename = "Title")]
-    pub title: String,
-    #[tabled(rename = "History", display_with = "display_right_12")]
-    pub price_history: String,
-    #[tabled(rename = "Size (m²)", display_with = "display_right_8")]
-    pub size: String,
-    #[tabled(rename = "Rooms", display_with = "display_right_5")]
-    pub rooms: String,
-    #[tabled(rename = "Address")]
-    pub address: String,
+pub struct PropertyDisplay {
+    pub property: super::Property,
+    pub price_history: Vec<(f64, DateTime<Utc>)>,
 }
 
-fn display_right_12(s: &str) -> String {
-    format!("{:>12}", s)
-}
-
-fn display_right_5(s: &str) -> String {
-    format!("{:>5}", s)
-}
-
-fn display_right_8(s: &str) -> String {
-    format!("{:>8}", s)
-}
-
-impl PropertyTableRow {
-    pub fn from_property_display(display: &crate::PropertyDisplay, graph_height: u8) -> Self {
-        let history = display.price_history.as_ref()
-            .map(|h| h.to_ascii_graph(12, graph_height as usize).replace('\n', " "))
-            .unwrap_or_else(|| "No hist".to_string());
-
-        let size_str = display.property.covered_size
-            .map(|s| format!("{}m²", s.round() as i64))
-            .unwrap_or_else(|| "N/A".to_string());
-
-        let rooms_str = display.property.rooms
-            .map(|r| r.to_string())
-            .unwrap_or_else(|| "N/A".to_string());
-
-        Self {
-            title: display.property.title.clone(),
-            price_history: history,
-            size: size_str,
-            rooms: rooms_str,
-            address: display.property.address.clone(),
-        }
+impl fmt::Display for PropertyDisplay {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "{}", self.to_string())
     }
 }
 
-pub fn create_property_table(displays: &[crate::PropertyDisplay], graph_height: u8) -> String {
-    let table_rows: Vec<PropertyTableRow> = displays.iter()
-        .map(|d| PropertyTableRow::from_property_display(d, graph_height))
-        .collect();
+impl PropertyDisplay {
+    pub fn new(property: super::Property, price_history: Vec<(f64, DateTime<Utc>)>) -> Self {
+        Self {
+            property,
+            price_history,
+        }
+    }
 
-    let mut table = Table::new(&table_rows);
-    
-    // Configure table style and column widths
-    table
-        .with(Style::modern())
-        .with(Modify::new(Columns::single(0)).with(Width::truncate(40)))     // Title column
-        .with(Modify::new(Columns::single(1)).with(Width::truncate(12)))     // History column
-        .with(Modify::new(Columns::single(2)).with(Width::truncate(8)))      // Size column
-        .with(Modify::new(Columns::single(3)).with(Width::truncate(5)))      // Rooms column
-        .with(Modify::new(Columns::single(4)).with(Width::wrap(60)));        // Address column
+    fn create_ascii_graph(data: &[(f64, DateTime<Utc>)], width: usize, height: usize) -> String {
+        if data.is_empty() {
+            return String::new();
+        }
 
-    table.to_string()
+        let mut graph = vec![vec![' '; width]; height];
+        let max_price = data.iter().map(|(p, _)| *p).fold(f64::NEG_INFINITY, f64::max);
+        let min_price = data.iter().map(|(p, _)| *p).fold(f64::INFINITY, f64::min);
+        let price_range = max_price - min_price;
+
+        for (i, (price, _)) in data.iter().enumerate() {
+            if i >= width {
+                break;
+            }
+            let normalized_height = if price_range > 0.0 {
+                ((price - min_price) / price_range * (height as f64 - 1.0)) as usize
+            } else {
+                height / 2
+            };
+            for y in 0..=normalized_height {
+                graph[y][i] = '█';
+            }
+        }
+
+        graph.into_iter()
+            .rev()
+            .map(|row| row.into_iter().collect::<String>())
+            .collect::<Vec<_>>()
+            .join("\n")
+    }
+
+    pub fn to_string(&self) -> String {
+        let graph = Self::create_ascii_graph(&self.price_history, 40, 10);
+        
+        let mut details = Vec::new();
+        
+        if let Some(size) = self.property.covered_size {
+            details.push(format!("{:.1} m²", size));
+        }
+        
+        if let Some(rooms) = self.property.rooms {
+            details.push(format!("{} rooms", rooms));
+        }
+        
+        if let Some(antiquity) = self.property.antiquity {
+            details.push(format!("{} years old", antiquity));
+        }
+        
+        let details_str = details.join(" | ");
+        let price_str = format!("${:.2}", self.property.price_usd);
+        
+        format!(
+            "{}\n{}\n{}\n{}\n{}\n{}",
+            self.property.title.bright_white().bold(),
+            self.property.description.as_deref().unwrap_or(""),
+            format!("Price: {}", price_str).green(),
+            if !details_str.is_empty() {
+                format!("Details: {}", details_str)
+            } else {
+                String::new()
+            },
+            format!("Address: {} - {}", self.property.address, self.property.district),
+            if !graph.is_empty() {
+                format!("\nPrice History:\n{}", graph)
+            } else {
+                String::new()
+            }
+        )
+    }
 } 

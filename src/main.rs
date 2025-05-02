@@ -1,13 +1,16 @@
 use brea_core::{
-    PropertyDisplay, PropertyType, Result,
-    create_property_table, Database, PropertyStatus,
+    PropertyDisplay, PropertyType, Result, BreaError,
+    Database,
 };
+use brea_core::db::migrations::{apply_migrations, rollback_migration, get_applied_migrations};
+use brea_core::db::types::{DbPropertyStatus, STATUS_ACTIVE, STATUS_SOLD, STATUS_REMOVED};
 use brea_scrapers::{ScraperType, ScrapeQuery, ScraperFactory};
 use clap::{Parser, Subcommand, ValueEnum};
 use csv::Writer;
 use std::path::PathBuf;
 use tracing::{info, Level};
 use std::sync::Arc;
+use std::str::FromStr;
 
 #[derive(Parser)]
 #[command(author, version, about, long_about = None)]
@@ -45,32 +48,32 @@ enum Commands {
     Database(DatabaseCommand),
 }
 
-#[derive(Debug, Clone, Copy, ValueEnum)]
-enum CliScraperType {
+#[derive(Clone, Copy, Debug, ValueEnum)]
+pub enum CliScraperType {
     Argenprop,
 }
 
 impl From<CliScraperType> for ScraperType {
-    fn from(value: CliScraperType) -> Self {
-        match value {
+    fn from(scraper_type: CliScraperType) -> Self {
+        match scraper_type {
             CliScraperType::Argenprop => ScraperType::Argenprop,
         }
     }
 }
 
-#[derive(Debug, Clone, Copy, ValueEnum)]
-enum CliPropertyStatus {
+#[derive(Clone, Copy, Debug, ValueEnum)]
+pub enum CliPropertyStatus {
     Active,
     Sold,
     Removed,
 }
 
-impl From<CliPropertyStatus> for PropertyStatus {
-    fn from(value: CliPropertyStatus) -> Self {
-        match value {
-            CliPropertyStatus::Active => PropertyStatus::Active,
-            CliPropertyStatus::Sold => PropertyStatus::Sold,
-            CliPropertyStatus::Removed => PropertyStatus::Removed,
+impl From<CliPropertyStatus> for DbPropertyStatus {
+    fn from(status: CliPropertyStatus) -> Self {
+        match status {
+            CliPropertyStatus::Active => DbPropertyStatus::new(STATUS_ACTIVE),
+            CliPropertyStatus::Sold => DbPropertyStatus::new(STATUS_SOLD),
+            CliPropertyStatus::Removed => DbPropertyStatus::new(STATUS_REMOVED),
         }
     }
 }
@@ -210,52 +213,41 @@ enum SortOrder {
 
 async fn scrape_properties(cmd: &ScrapeCommand, db: Arc<Database>) -> Result<()> {
     let scraper = ScraperFactory::create_scraper(cmd.scraper.into());
+    let query = ScrapeQuery::new(
+        cmd.district.clone(),
+        cmd.property_type[0].clone(),
+        cmd.min_price,
+        cmd.max_price,
+        cmd.min_size,
+        cmd.max_size,
+        Some(Arc::clone(&db)),
+    );
 
-    for property_type in &cmd.property_type {
-        info!("Scraping {} properties in {}", property_type, cmd.district);
-        let query = ScrapeQuery::new(
-            cmd.district.clone(),
-            property_type.clone(),
-            cmd.min_price,
-            cmd.max_price,
-            cmd.min_size,
-            cmd.max_size,
-            Some(Arc::clone(&db)),
-        );
+    let results = scraper.scrape_listing(query, cmd.max_pages).await?;
+    let results_len = results.len();
 
-        let results = scraper.scrape_listing(query, cmd.max_pages).await?;
-        let results_len = results.len();
-        
-        // Save properties first
-        for (property, _images) in &results {
-            let mut property = property.clone();
-            db.save_property(&mut property).await?;
-        }
-        
-        // Display properties in the same format as the list command
-        let mut displays = Vec::new();
-        for (property, _images) in &results {
-            let price_history = db.get_price_history(property.id.unwrap()).await?;
-            displays.push(PropertyDisplay::new(property.clone(), price_history));
-        }
-
-        let table = create_property_table(&displays, 1); // Use default graph height of 1
-        println!("{}", table);
-
-        info!("Found {} properties", results_len);
+    let mut displays = Vec::new();
+    for (property, _images) in &results {
+        let price_history = db.get_price_history(property.id).await?;
+        displays.push(PropertyDisplay::new(property.clone(), price_history));
     }
+    for display in &displays {
+        println!("{}", display.to_string());
+    }
+
+    info!("Found {} properties", results_len);
     Ok(())
 }
 
 async fn update_properties(cmd: &UpdateCommand, db: Arc<Database>) -> Result<()> {
     let scraper = ScraperFactory::create_scraper(cmd.scraper.into());
-    let properties = db.list_properties(None, None, None, None, None, None, None, None, false).await?;
+    let properties = db.get_properties().await?;
 
     for property in properties {
-        if let Some(property_type) = property.property_type {
+        if let Some(property_type) = property.property_type.as_ref().and_then(|t| PropertyType::from_str(t).ok()) {
             let query = ScrapeQuery::new(
                 property.district.clone(),
-                property_type.clone(),
+                property_type,
                 None, // No price filters for updates
                 None,
                 None, // No size filters for updates
@@ -273,12 +265,12 @@ async fn update_properties(cmd: &UpdateCommand, db: Arc<Database>) -> Result<()>
             // Display updated properties in the same format as the list command
             let mut displays = Vec::new();
             for (property, _images) in &results {
-                let price_history = db.get_price_history(property.id.unwrap()).await?;
+                let price_history = db.get_price_history(property.id).await?;
                 displays.push(PropertyDisplay::new(property.clone(), price_history));
             }
-
-            let table = create_property_table(&displays, 1); // Use default graph height of 1
-            println!("{}", table);
+            for display in &displays {
+                println!("{}", display.to_string());
+            }
 
             info!("Updated {} properties", results.len());
         }
@@ -312,34 +304,32 @@ enum DatabaseAction {
     List,
 }
 
-async fn handle_database_command(cmd: &DatabaseCommand) -> Result<()> {
+async fn handle_migrations(cmd: &DatabaseCommand) -> Result<()> {
     match cmd.action {
         DatabaseAction::Up => {
             let db = Database::new(&cmd.database).await?;
             info!("Applying all pending migrations...");
-            db.migrate().await?;
+            apply_migrations(db.pool()).await?;
             info!("All migrations applied successfully.");
         }
         DatabaseAction::Down => {
-            let db = Database::new_without_migrations(&cmd.database).await?;
+            let db = Database::new(&cmd.database).await?;
             let version = cmd.target_version.ok_or_else(|| {
-                brea_core::BreaError::Database(sqlx::Error::Protocol(
-                    "Target version is required for rollback".into()
-                ))
+                BreaError::InvalidPropertyType("Target version is required for rollback".to_string())
             })?;
             info!("Rolling back to version {}...", version);
-            db.rollback(version).await?;
+            rollback_migration(db.pool(), version).await?;
             info!("Rollback completed successfully.");
         }
         DatabaseAction::List => {
             let db = Database::new_without_migrations(&cmd.database).await?;
-            let migrations = db.get_applied_migrations().await?;
+            let migrations = get_applied_migrations(db.pool()).await?;
             if migrations.is_empty() {
                 info!("No migrations have been applied.");
             } else {
                 info!("Applied migrations:");
-                for version in migrations {
-                    info!("  - Version {}", version);
+                for migration in migrations {
+                    println!("{}", migration);
                 }
             }
         }
@@ -375,61 +365,40 @@ async fn main() -> Result<()> {
             update_properties(cmd, db).await
         }
         Commands::Database(cmd) => {
-            handle_database_command(cmd).await
+            handle_migrations(cmd).await
         }
     }
 }
 
 async fn list_properties(cmd: &ListCommand, db: &Database) -> Result<()> {
-    let properties = db.list_properties(
-        cmd.source.as_deref(),
-        cmd.min_price,
-        cmd.max_price,
-        cmd.min_size,
-        cmd.max_size,
-        Some(cmd.limit),
-        Some(cmd.offset),
-        Some(&cmd.sort_by),
-        cmd.sort_order == SortOrder::Desc,
-    ).await?;
-
+    let properties = db.get_properties().await?;
     let mut displays = Vec::new();
-    for property in &properties {
-        if property.status == cmd.status.into() {
-            let price_history = db.get_price_history(property.id.unwrap()).await?;
+    for property in properties.iter() {
+        if property.status == DbPropertyStatus::from(cmd.status) {
+            let price_history = db.get_price_history(property.id).await?;
             displays.push(PropertyDisplay::new(property.clone(), price_history));
         }
     }
-
-    let table = create_property_table(&displays, cmd.graph_height);
-    println!("{}", table);
+    for display in &displays {
+        println!("{}", display.to_string());
+    }
 
     info!("Listed {} properties", displays.len());
     Ok(())
 }
 
 async fn export_properties(cmd: &ExportCommand, db: &Database) -> Result<()> {
-    let properties = db.list_properties(
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-        false,
-    ).await?;
-
+    let properties = db.get_properties().await?;
     let mut writer = Writer::from_path(&cmd.output)?;
+    let properties_len = properties.len();
 
-    for property in &properties {
-        if property.status == cmd.status.into() {
-            writer.serialize(property)?;
+    for property in properties {
+        if let Some(_) = property.property_type.as_ref().and_then(|t| PropertyType::from_str(t).ok()) {
+            writer.serialize(&property)?;
         }
     }
 
     writer.flush()?;
-    info!("Exported {} active properties to {}", properties.len(), cmd.output.display());
+    info!("Exported {} properties to {}", properties_len, cmd.output.display());
     Ok(())
 } 

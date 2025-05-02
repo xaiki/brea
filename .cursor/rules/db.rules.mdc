@@ -1,0 +1,155 @@
+---
+description: 
+globs: *.rs
+alwaysApply: false
+---
+ # Database Type Safety Rules
+
+## Overview
+These rules ensure type-safe database operations throughout the codebase. They enforce compile-time type checking for database operations, preventing runtime errors and maintaining data consistency.
+
+## Rules
+
+### 1. Status Handling
+✅ DO use `DbPropertyStatus` for property status fields
+❌ DON'T use raw strings for status values
+```rust
+// Good
+property.status = STATUS_ACTIVE;
+query.with_status(STATUS_ACTIVE);
+
+// Bad
+property.status = "active";
+query.with_status("active");
+```
+
+### 2. Timestamp Handling
+✅ DO use `DbTimestamp` for creating and handling timestamps
+❌ DON'T use raw DateTime values directly
+```rust
+// Good
+let now = DbTimestamp::now();
+property.updated_at = *now.inner();
+
+// Bad
+property.updated_at = Utc::now();
+```
+
+### 3. Query Building
+✅ DO use the type-safe query builders (`PropertyQueryBuilder`, `PropertyImageQueryBuilder`)
+❌ DON'T write raw SQL queries for standard operations
+```rust
+// Good
+let properties = PropertyQueryBuilder::new()
+    .with_status(STATUS_ACTIVE)
+    .with_price_range(Some(100_000.0), Some(200_000.0))
+    .execute(&pool)
+    .await?;
+
+// Bad
+let properties = sqlx::query("SELECT * FROM properties WHERE status = 'active'")
+    .fetch_all(&pool)
+    .await?;
+```
+
+### 4. Row Mapping
+✅ DO implement `FromRow` for database entities
+❌ DON'T use manual row mapping
+```rust
+// Good
+#[derive(FromRow)]
+struct Property {
+    // fields...
+}
+
+// Bad
+let property = Property {
+    id: row.get("id"),
+    // manual mapping...
+};
+```
+
+### 5. Migrations
+✅ DO use type-safe migrations with explicit up/down methods
+❌ DON'T use raw SQL strings for migrations
+```rust
+// Good
+impl Migration {
+    fn up(&self) -> &str {
+        include_str!("../migrations/001_create_properties.up.sql")
+    }
+}
+
+// Bad
+let sql = "CREATE TABLE properties (...)";
+```
+
+### 6. Parameter Binding
+✅ DO use query builder's bind methods
+❌ DON'T use string interpolation or concatenation
+```rust
+// Good
+query.push_bind(property_id);
+
+// Bad
+query.push(&format!("WHERE id = {}", property_id));
+```
+
+### 7. Error Handling
+✅ DO use the custom `Result` type for database operations
+❌ DON'T use raw `sqlx::Result` or `std::Result`
+```rust
+// Good
+pub async fn save_property(&self, property: &mut Property) -> Result<()>
+
+// Bad
+pub async fn save_property(&self, property: &mut Property) -> sqlx::Result<()>
+```
+
+### 8. Connection Management
+✅ DO use the `Database` struct for connection management
+❌ DON'T create raw connections or pools directly
+```rust
+// Good
+let db = Database::new(db_path).await?;
+
+// Bad
+let pool = SqlitePool::connect("sqlite:...").await?;
+```
+
+### 9. Testing
+✅ DO use test utilities and fixtures
+❌ DON'T create test databases manually
+```rust
+// Good
+let db = test_connection().await;
+
+// Bad
+let db = SqlitePool::connect(":memory:").await?;
+```
+
+### 10. Constants and Enums
+✅ DO use strongly typed constants and enums
+❌ DON'T use magic strings or numbers
+```rust
+// Good
+const STATUS_ACTIVE: DbPropertyStatus = DbPropertyStatus::new("active");
+
+// Bad
+const STATUS_ACTIVE: &str = "active";
+```
+
+## Enforcement
+These rules are enforced through:
+1. Code review process
+2. Automated tests
+3. Compiler checks (where possible)
+4. Documentation requirements
+5. NEVER remove the DB, never loose data
+
+## Benefits
+1. Compile-time error detection
+2. Type safety across database operations
+3. Consistent error handling
+4. Improved maintainability
+5. Better IDE support and autocompletion

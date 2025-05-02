@@ -9,10 +9,13 @@ use std::path::PathBuf;
 use tracing::{debug, info};
 use std::sync::Mutex;
 use regex;
+use brea_core::db::types::{DbPropertyStatus, STATUS_ACTIVE};
+use std::sync::Arc;
+use brea_core::db::types::DbTimestamp;
 
 #[derive(Debug)]
 pub struct ArgenPropScraper {
-    client: Client,
+    client: Arc<Client>,
     html_parser: Mutex<()>,
 }
 
@@ -23,7 +26,7 @@ unsafe impl Sync for ArgenPropScraper {}
 impl ArgenPropScraper {
     pub fn new() -> Self {
         Self {
-            client: Client::new(),
+            client: Arc::new(Client::new()),
             html_parser: Mutex::new(()),
         }
     }
@@ -67,22 +70,22 @@ impl ArgenPropScraper {
             .map_err(|e| BreaError::Scraping(e.to_string()))
     }
 
-    fn parse_price(&self, price_text: &str) -> Option<f64> {
-        let cleaned = price_text
-            .trim()
-            .replace("USD", "")
+    fn parse_price(&self, price_str: &str) -> Option<f64> {
+        price_str
             .replace("U$S", "")
-            .replace("$", "")
+            .replace("USD", "")
             .replace(".", "")
-            .replace(",", "")
             .trim()
-            .to_string();
-        
-        if cleaned.is_empty() {
-            return None;
-        }
-        
-        cleaned.parse::<f64>().ok()
+            .parse()
+            .ok()
+    }
+
+    fn parse_size(&self, size_str: &str) -> Option<f64> {
+        size_str
+            .replace("m²", "")
+            .trim()
+            .parse()
+            .ok()
     }
 
     fn extract_dimensions(&self, text: &str) -> Option<f64> {
@@ -457,7 +460,7 @@ impl Scraper for ArgenPropScraper {
                     .next()
                     .map(|el| el.text().collect::<String>())
                     .map(|text| text.trim().to_string())
-                    .unwrap_or_default();
+                    .unwrap_or_else(|| "".to_string());
 
                 let property_url = element.select(&Self::parse_selector("a.card")?)
                     .next()
@@ -471,11 +474,10 @@ impl Scraper for ArgenPropScraper {
                     })
                     .unwrap_or_default();
 
-                let price_usd = element.select(&price_selector)
+                let price_str = element.select(&price_selector)
                     .next()
                     .map(|el| el.text().collect::<String>())
-                    .and_then(|price| self.parse_price(&price))
-                    .unwrap_or(0.0);
+                    .unwrap_or_default();
 
                 let address = element.select(&address_selector)
                     .next()
@@ -488,42 +490,43 @@ impl Scraper for ArgenPropScraper {
                 let description = element.select(&description_selector)
                     .next()
                     .map(|el| el.text().collect::<String>())
-                    .map(|desc| desc.trim().to_string());
+                    .map(|desc| desc.trim().to_string())
+                    .unwrap_or_default();
 
-                let property = Property {
-                    id: None,
-                    external_id,
+                let price_usd = self.parse_price(&price_str).unwrap_or(0.0);
+
+                let mut property = Property {
+                    id: 0,
+                    external_id: external_id.to_string(),
                     source: "argenprop".to_string(),
-                    property_type: Some(property_type.clone()),
-                    district: query.district.clone(),
-                    title,
-                    description,
+                    property_type: Some(query.property_type.to_string()),
+                    district: district.to_string(),
+                    title: title.to_string(),
+                    description: Some(description.to_string()),
                     price_usd,
-                    address,
+                    address: address.to_string(),
                     covered_size,
                     rooms,
                     antiquity,
-                    url: Url::parse(&property_url).map_err(|e| BreaError::Scraping(e.to_string()))?,
-                    status: PropertyStatus::Active,
-                    created_at: Utc::now(),
-                    updated_at: Utc::now(),
+                    url: property_url.to_string(),
+                    status: DbPropertyStatus::new(STATUS_ACTIVE),
+                    created_at: DbTimestamp::now(),
+                    updated_at: DbTimestamp::now(),
                 };
 
-                // Extract images
                 let mut images = Vec::new();
                 for img in element.select(&images_selector) {
-                    if let Some(img_url) = img.value().attr("src").or_else(|| img.value().attr("data-src")) {
-                        if let Ok(url) = Url::parse(img_url) {
-                            let image = PropertyImage {
-                                id: None,
-                                property_id: 0,
-                                url,
-                                local_path: PathBuf::new(),
-                                hash: Vec::new(),
-                                created_at: Utc::now(),
-                            };
-                            images.push(image);
-                        }
+                    if let Some(src) = img.value().attr("src") {
+                        let image = PropertyImage {
+                            id: 0,
+                            property_id: 0,
+                            url: src.to_string(),
+                            local_path: PathBuf::new().to_string_lossy().to_string(),
+                            hash: vec![],
+                            created_at: DbTimestamp::now(),
+                            updated_at: DbTimestamp::now(),
+                        };
+                        images.push(image);
                     }
                 }
 
@@ -533,10 +536,9 @@ impl Scraper for ArgenPropScraper {
 
         // Check for sold properties
         if let Some(db) = &query.db {
-            let sold_properties = db.detect_sold_properties("argenprop", &external_ids).await?;
+            let sold_properties = db.detect_sold_properties(&external_ids.iter().map(|s| s.as_str()).collect::<Vec<_>>()).await?;
             for property in sold_properties {
-                info!("Property {} marked as sold", property.external_id);
-                db.mark_property_sold(property.id.unwrap()).await?;
+                db.mark_property_as_sold(property.id).await?;
             }
         }
 
@@ -682,10 +684,10 @@ mod tests {
         
         // Override the client to use a non-existent domain
         let mut scraper = scraper;
-        scraper.client = Client::builder()
+        scraper.client = Arc::new(Client::builder()
             .connect_timeout(std::time::Duration::from_millis(100))
             .build()
-            .unwrap();
+            .unwrap());
         
         let result = scraper.scrape_page(&query).await;
         assert!(result.is_err(), "Request to non-existent domain should fail");
